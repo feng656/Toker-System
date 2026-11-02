@@ -1,619 +1,74 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="自由光·拓客系统：AI 内容生产 + 多平台分发 + 评论线索挖掘">
 <title>自由光·拓客系统</title>
-<link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
-<style>
-  body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:#f5f7fa}
-  .topbar{background:#1f2d3d;color:#fff;padding:0 20px;height:56px;display:flex;align-items:center;justify-content:space-between}
-  .topbar b{font-size:17px}
-  .layout{display:flex;min-height:calc(100vh - 56px)}
-  .menu{width:170px;background:#fff;padding:10px 0;border-right:1px solid #e4e7ed}
-  .menu div{padding:12px 20px;cursor:pointer;color:#606266;font-size:14px}
-  .menu div.on{color:#409eff;border-right:3px solid #409eff;background:#ecf5ff}
-  .main{flex:1;padding:18px;overflow:auto}
-  .card{background:#fff;border-radius:8px;padding:16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
-  .pf{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;color:#fff;margin-right:6px}
-  .pf-douyin{background:#000}.pf-shipinhao{background:#07c160}.pf-gzh{background:#1aad19}.pf-xhs{background:#ff2442}.pf-moments{background:#576b95}
-  .line-tag{font-size:12px;padding:1px 6px;border-radius:3px}
-  .line-project{background:#e8f4ff;color:#1d7dcf}.line-channel{background:#fef0e6;color:#e6792f}
-  .intent-high{color:#f56c6c;font-weight:bold}.intent-mid{color:#e6a23c}.intent-low{color:#909399}
-  .body-pre{white-space:pre-wrap;background:#fafafa;padding:10px;border-radius:6px;font-size:13px;max-height:180px;overflow:auto}
-  .stat{text-align:center;padding:14px}.stat .n{font-size:26px;font-weight:bold;color:#303133}.stat .l{color:#909399;font-size:13px;margin-top:4px}
-  .btnrow button{margin-right:8px;margin-top:6px}
-  #login{max-width:360px;margin:12vh auto;background:#fff;padding:30px;border-radius:10px}
-  .hit{color:#f56c6c;font-size:12px}
-  .grid5{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
-  .leadcard{border-left:4px solid #dcdfe6}
-  .leadcard.high{border-left-color:#f56c6c}
-  .leadcard.mid{border-left-color:#e6a23c}
-  @media(max-width:760px){.grid5{grid-template-columns:repeat(2,1fr)}.menu{width:110px}.menu div{padding:12px 10px}}
-  /* ===== 工作台 ===== */
-  .wk-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding:4px 2px}
-  .wk-title{font-size:17px;font-weight:600;color:#303133}
-  .wk-sub{font-size:12px;color:#909399;margin-top:3px}
-  .wk-genbtn{height:36px;padding:0 18px;border-radius:8px;background:linear-gradient(135deg,#409eff,#6a5cff);border:none}
-  .wk-genbtn:hover{opacity:.92}
-  .wk-wrap{display:flex;gap:18px;align-items:flex-start}
-  .wk-left{flex:1;min-width:0}
-  .wk-card{background:#fff;border-radius:10px;padding:18px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
-  .wk-card-top{display:flex;align-items:center;flex-wrap:wrap;gap:4px}
-  .wk-card-title{font-size:15px;color:#303133;margin-left:2px}
-  .wk-top-right{margin-left:auto;display:flex;align-items:center;gap:6px}
-  .qscore{display:inline-block;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600}
-  .q-good{background:#e8f7ee;color:#1a9e54}
-  .q-mid{background:#fdf3e2;color:#d08a1d}
-  .q-bad{background:#fdecec;color:#e04343}
-  .wk-card .body-pre{margin-top:12px;max-height:220px;font-size:13px;line-height:1.7;background:#f8f9fb;border:1px solid #f0f2f5}
-  .wk-alert{margin-top:10px;background:#fdecec;color:#d93026;font-size:13px;padding:8px 12px;border-radius:6px;border-left:3px solid #e04343}
-  .wk-actions{margin-top:14px;display:flex;gap:8px}
-  .wk-actions .el-button{margin:0;border-radius:7px}
-  /* 右侧平台通道 */
-  .wk-side{width:520px;flex-shrink:0}
-  .wk-side-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px}
-  .wk-side-title{font-size:15px;font-weight:600;color:#303133}
-  .wk-side-sub{font-size:12px;color:#909399}
-  .qr-box{position:relative;width:100%;background:#fff;border:1px solid #ebeef5;border-radius:10px;overflow:hidden;min-height:400px;display:flex;align-items:center;justify-content:center}
-  .qr-img{width:100%;display:block;object-fit:contain}
-  /* 平台切换按钮撑满 */
-  .pf-tabs{--el-border-radius-base:8px}
-  .pf-tabs .el-radio-button{flex:1}
-  .pf-tabs .el-radio-button__inner{width:100%;padding:8px 4px;font-size:13px}
-  .qr-mask{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.75);color:#909399;font-size:13px}
-  .qr-logged{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.55)}
-  .qr-logged-badge{background:#67c23a;color:#fff;padding:8px 20px;border-radius:20px;font-size:14px;font-weight:600;box-shadow:0 2px 8px rgba(103,194,58,.4)}
-  .qr-foot{display:flex;align-items:center;justify-content:space-between;margin-top:10px}
-  .wk-note{font-size:12px;color:#909399;line-height:1.7;margin-top:10px}
-  .wk-glance .glance-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-  .g-item{background:#f8f9fb;border-radius:8px;padding:12px;text-align:center}
-  .g-n{font-size:22px;font-weight:700;color:#303133}
-  .g-n.g-hot{color:#f56c6c}
-  .g-l{font-size:12px;color:#909399;margin-top:2px}
-  @media(max-width:1100px){.wk-side{width:440px}}
-  @media(max-width:860px){.wk-wrap{flex-direction:column}.wk-side{width:100%}}
-</style>
+<link rel="stylesheet" href="./vendor/element-plus/index.css">
+<link rel="stylesheet" href="./assets/css/app.css">
 </head>
 <body>
-<div id="app">
+<div id="app" v-cloak>
   <!-- 登录 -->
-  <div v-if="!token" id="login">
-    <h3 style="margin-top:0">自由光 · 拓客系统</h3>
-    <el-input v-model="loginForm.username" placeholder="账号" style="margin-bottom:12px"></el-input>
-    <el-input v-model="loginForm.password" type="password" placeholder="密码" @keyup.enter="doLogin" style="margin-bottom:16px"></el-input>
-    <el-button type="primary" style="width:100%" @click="doLogin" :loading="loading">登录</el-button>
-    <p style="color:#909399;font-size:12px">默认：admin / admin123</p>
+  <div v-if="!session.token" class="login-wrap">
+    <div class="login-card">
+      <div class="login-brand">自由光 · 拓客系统</div>
+      <div class="login-sub">AI 内容生产 · 多平台分发 · 评论线索挖掘</div>
+      <el-form :model="loginForm" label-position="top" @submit.prevent="doLogin">
+        <el-form-item label="账号">
+          <el-input v-model="loginForm.username" placeholder="请输入账号" autocomplete="username" @keyup.enter="doLogin"></el-input>
+        </el-form-item>
+        <el-form-item label="密码">
+          <el-input v-model="loginForm.password" type="password" show-password placeholder="请输入密码" autocomplete="current-password" @keyup.enter="doLogin"></el-input>
+        </el-form-item>
+        <el-alert v-if="loginError" :title="loginError" type="error" :closable="false" show-icon style="margin-bottom:12px"></el-alert>
+        <el-button type="primary" style="width:100%" :loading="loginLoading" @click="doLogin">登录</el-button>
+      </el-form>
+      <div class="login-foot">登录后按角色进入对应工作台；账号由管理员在「设置与帮助 · 用户管理」中创建。</div>
+    </div>
   </div>
 
+  <!-- 主框架 -->
   <template v-else>
     <div class="topbar">
-      <b>自由光 · 拓客系统</b>
-      <span>{{user.name}}（{{roleName}}） <el-button size="small" text style="color:#fff" @click="logout">退出</el-button></span>
+      <div class="topbar-left">
+        <b>自由光 · 拓客系统</b>
+        <span class="topbar-env">一期 · 半自动获客</span>
+      </div>
+      <div class="topbar-right">
+        <el-tooltip content="平台模式与角色说明" placement="bottom">
+          <span class="topbar-mode">{{ modeSummary }}</span>
+        </el-tooltip>
+        <span class="topbar-user">{{ session.user.name }}（{{ roleName(session.user.role) }}）</span>
+        <el-button size="small" text style="color:#fff" @click="logout">退出</el-button>
+      </div>
     </div>
     <div class="layout">
-      <div class="menu">
-        <div :class="{on:page==='work'}" @click="go('work')">⚡ 工作台<span v-if="pendings.length" style="color:#f56c6c">（{{pendings.length}}）</span></div>
-        <div :class="{on:page==='todo'}" @click="go('todo')">📋 今日待办</div>
-        <div :class="{on:page==='contents'}" @click="go('contents')">📝 内容管理</div>
-        <div :class="{on:page==='materials'}" @click="go('materials')">📚 素材库</div>
-        <div :class="{on:page==='topics'}" @click="go('topics')">💡 选题池</div>
-        <div :class="{on:page==='leads'}" @click="go('leads')">🎯 线索看板</div>
-        <div :class="{on:page==='dash'}" @click="go('dash')">📊 数据看板</div>
-        <div :class="{on:page==='accounts'}" @click="go('accounts')" v-if="user.role==='admin'">⚙️ 平台设置</div>
-      </div>
-      <div class="main">
-
-        <!-- 今日待办 -->
-        <template v-if="page==='todo'">
-          <h3>今日待办（{{todo.pending.length}} 条待处理）</h3>
-          <el-button type="primary" size="small" @click="genDaily" :loading="loading">✨ 生成明日内容包</el-button>
-          <div class="card" v-for="v in todo.pending" :key="v.id" style="margin-top:14px">
-            <span class="pf" :class="'pf-'+v.platform">{{pfName(v.platform)}}</span>
-            <span class="line-tag" :class="'line-'+v.biz_line">{{v.biz_line==='project'?'甲方线':'渠道线'}}</span>
-            <b>{{v.content_title}}</b>
-            <span style="float:right;color:#909399;font-size:12px">建议 {{v.best_time||'18:00'}} 发布</span>
-            <div class="body-pre" style="margin-top:10px">{{v.body}}</div>
-            <div v-if="v.hashtags" style="color:#409eff;font-size:13px;margin-top:6px">{{v.hashtags}}</div>
-            <div v-if="!v.compliance_ok" class="hit">⚠ 命中合规红线：{{v.compliance_hits}}，请修改后再发</div>
-            <div class="btnrow">
-              <el-button size="small" @click="copy(v)">复制文案</el-button>
-              <el-input v-model="v._url" size="small" placeholder="发布后粘贴链接" style="width:240px;display:inline-block;vertical-align:middle"></el-input>
-              <el-button size="small" type="success" @click="markPublished(v)">标记已发</el-button>
-            </div>
-          </div>
-          <el-empty v-if="!todo.pending.length" description="今日内容已全部发布 🎉"></el-empty>
-        </template>
-
-        <!-- ⚡ 工作台：左=内容审核确认，右=平台通道侧栏 -->
-        <template v-if="page==='work'">
-          <!-- 页头 -->
-          <div class="wk-head">
-            <div>
-              <div class="wk-title">今日内容</div>
-              <div class="wk-sub">AI 已生成并完成质检，你只需确认内容合不合适</div>
-            </div>
-            <el-button type="primary" class="wk-genbtn" @click="genDaily" :loading="loading">✨ 生成内容包</el-button>
-          </div>
-
-          <div class="wk-wrap">
-            <!-- 左：内容卡片区 -->
-            <div class="wk-left">
-              <div class="wk-card" v-for="v in workItems" :key="v.id">
-                <div class="wk-card-top">
-                  <span class="pf" :class="'pf-'+v.platform">{{pfName(v.platform)}}</span>
-                  <span class="line-tag" :class="'line-'+v.biz_line">{{v.biz_line==='project'?'甲方线':'渠道线'}}</span>
-                  <b class="wk-card-title">{{v.content_title}}</b>
-                  <span class="wk-top-right">
-                    <span class="qscore" :class="v.quality_score>=85?'q-good':(v.quality_score>=70?'q-mid':'q-bad')">质量 {{v.quality_score}}</span>
-                    <el-tag v-if="v.publish_status==='published'" size="small" type="success">已发布</el-tag>
-                    <el-tag v-else-if="v.publish_status==='failed'" size="small" type="danger">发布失败</el-tag>
-                  </span>
-                </div>
-                <div class="body-pre">{{v.body}}</div>
-                <div v-if="v.hashtags" style="color:#409eff;font-size:13px;margin-top:8px">{{v.hashtags}}</div>
-                <div v-if="!v.compliance_ok" class="wk-alert">⚠ 命中合规红线：{{v.compliance_hits}}</div>
-                <div v-if="v.publish_error" class="wk-alert">✕ 发布失败：{{v.publish_error}}</div>
-                <div class="wk-actions">
-                  <el-button v-if="v.confirm_status==='pending'" type="success" @click="workConfirm(v)" :loading="v._busy">✅ 合适，发布</el-button>
-                  <el-button v-if="v.confirm_status==='pending'" @click="rejectPub(v);loadWork()">驳回</el-button>
-                  <el-button @click="copyAndOpen(v)">📋 复制文案{{platMode[v.platform]==='copy'?'并打开'+pfName(v.platform)+'后台':''}}</el-button>
-                </div>
-              </div>
-              <el-empty v-if="!workItems.length" description="暂无待处理内容，点右上角「生成内容包」"></el-empty>
-            </div>
-
-            <!-- 右：平台通道侧栏 -->
-            <div class="wk-side">
-              <div class="wk-card wk-login">
-                <div class="wk-side-head">
-                  <span class="wk-side-title">平台登录</span>
-                  <span class="wk-side-sub">扫码一次长期有效</span>
-                </div>
-                <el-radio-group v-model="selPlatform" class="pf-tabs" style="width:100%;margin-bottom:12px;display:flex;gap:6px" @change="openBrowser">
-                  <el-radio-button value="gzh" style="flex:1">公众号</el-radio-button>
-                  <el-radio-button value="douyin" style="flex:1">抖音</el-radio-button>
-                  <el-radio-button value="shipinhao" style="flex:1">视频号</el-radio-button>
-                  <el-radio-button value="xhs" style="flex:1">小红书</el-radio-button>
-                </el-radio-group>
-                <div class="qr-box">
-                  <img v-if="brImg" :src="'data:image/png;base64,'+brImg" class="qr-img"/>
-                  <div v-if="brLoading" class="qr-mask">加载中…</div>
-                  <div v-if="brLogged" class="qr-logged"><span class="qr-logged-badge">✓ 已登录，可直接发布</span></div>
-                </div>
-                <div class="qr-foot">
-                  <el-tag v-if="!brLogged" type="warning" size="small">未登录，请用微信扫码</el-tag>
-                  <el-button size="small" text type="primary" @click="openBrowser">刷新画面</el-button>
-                </div>
-                <div class="wk-note">登录态存服务器，一次扫码管一个月。公众号点发布后还需手机扫码确认（微信规定）。</div>
-              </div>
-
-              <div class="wk-card wk-glance">
-                <div class="wk-side-head"><span class="wk-side-title">数据速览</span></div>
-                <div class="glance-grid">
-                  <div class="g-item"><div class="g-n">{{funnel.published}}</div><div class="g-l">已发布</div></div>
-                  <div class="g-item"><div class="g-n">{{funnel.views}}</div><div class="g-l">总曝光</div></div>
-                  <div class="g-item"><div class="g-n">{{funnel.leads}}</div><div class="g-l">线索</div></div>
-                  <div class="g-item"><div class="g-n g-hot">{{funnel.high_intent}}</div><div class="g-l">高意向</div></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </template>
-
-        <!-- 待确认（AI质检达标 → 你只需点确认） -->
-        <template v-if="page==='confirm'">
-          <h3>待确认发布（{{pendings.length}} 条已达标，确认后自动发布）</h3>
-          <p style="color:#909399;font-size:13px">AI 已做合规检查 + 质量打分（≥70 才出现在这里）。点「确认发布」即自动推送到公众号/抖音；不满意可驳回。</p>
-          <div class="card" v-for="v in pendings" :key="v.id">
-            <span class="pf" :class="'pf-'+v.platform">{{pfName(v.platform)}}</span>
-            <span class="line-tag" :class="'line-'+v.biz_line">{{v.biz_line==='project'?'甲方线':'渠道线'}}</span>
-            <b>{{v.content_title}}</b>
-            <el-tag size="small" :type="v.quality_score>=85?'success':'warning'" style="margin-left:8px">质量分 {{v.quality_score}}</el-tag>
-            <span v-if="v.quality_note" style="color:#909399;font-size:12px;margin-left:6px">{{v.quality_note}}</span>
-            <div class="body-pre" style="margin-top:10px">{{v.body}}</div>
-            <div v-if="v.hashtags" style="color:#409eff;font-size:13px;margin-top:6px">{{v.hashtags}}</div>
-            <div class="btnrow">
-              <el-button size="small" type="success" @click="confirmPub(v)" :loading="v._busy">✅ 确认发布</el-button>
-              <el-button size="small" type="danger" @click="rejectPub(v)">驳回</el-button>
-              <el-button size="small" @click="copy(v)">复制文案</el-button>
-            </div>
-            <div v-if="v.publish_status==='failed'" class="hit">发布失败：{{v.publish_error}}</div>
-            <div v-if="v.publish_status==='published'" style="color:#67c23a;font-size:13px">✅ 已自动发布成功</div>
-          </div>
-          <el-empty v-if="!pendings.length" description="暂无待确认内容（生成后AI质检达标会自动出现在这里）"></el-empty>
-        </template>
-
-        <!-- 内容管理 -->
-        <template v-if="page==='contents'">
-          <h3>内容管理</h3>
-          <div class="card" v-for="c in contents" :key="c.id">
-            <b>{{c.title}}</b>
-            <span class="line-tag" :class="'line-'+c.biz_line" style="margin-left:8px">{{c.biz_line==='project'?'甲方线':'渠道线'}}</span>
-            <el-tag size="small" style="margin-left:8px">{{statusName(c.status)}}</el-tag>
-            <span style="float:right;color:#909399;font-size:13px">排期 {{c.scheduled_date}}</span>
-            <div v-for="v in c.variants" :key="v.id" style="margin-top:10px;border-top:1px dashed #eee;padding-top:8px">
-              <span class="pf" :class="'pf-'+v.platform">{{pfName(v.platform)}}</span>
-              <el-button size="small" text @click="v._open=!v._open">{{v._open?'收起':'展开/编辑'}}</el-button>
-              <el-tag v-if="v.published_url" size="small" type="success">已发</el-tag>
-              <span v-if="!v.compliance_ok" class="hit">⚠红线:{{v.compliance_hits}}</span>
-              <div v-if="v._open">
-                <el-input v-model="v.body" type="textarea" :rows="5" style="margin-top:6px"></el-input>
-                <el-input v-model="v.hashtags" placeholder="话题标签" size="small" style="margin-top:6px"></el-input>
-                <el-button size="small" type="primary" style="margin-top:6px" @click="saveVariant(v)">保存</el-button>
-              </div>
-            </div>
-            <div class="btnrow">
-              <el-button size="small" type="success" @click="review(c,'approve')">通过</el-button>
-              <el-button size="small" type="danger" @click="rejectNote=c.id">驳回</el-button>
-              <template v-if="rejectNote===c.id">
-                <el-input v-model="c._note" size="small" placeholder="驳回理由（会用于改进生成）" style="width:260px"></el-input>
-                <el-button size="small" type="danger" @click="review(c,'reject',c._note)">确认驳回</el-button>
-              </template>
-            </div>
-          </div>
-        </template>
-
-        <!-- 素材库 -->
-        <template v-if="page==='materials'">
-          <h3>素材库 <el-button size="small" type="primary" @click="matDlg=true">+ 新增素材</el-button></h3>
-          <el-select v-model="matFilter" placeholder="全部分类" clearable size="small" style="width:140px;margin-bottom:10px">
-            <el-option v-for="c in matCats" :key="c" :label="c" :value="c"></el-option>
-          </el-select>
-          <div class="card" v-for="m in filteredMaterials" :key="m.id">
-            <b>{{m.title}}</b>
-            <el-tag size="small" style="margin-left:8px">{{m.category}}</el-tag>
-            <el-tag size="small" :type="m.publicity==='public'?'success':(m.publicity==='masked'?'warning':'danger')" style="margin-left:4px">
-              {{pubName(m.publicity)}}</el-tag>
-            <span class="line-tag" :class="'line-'+m.biz_line" style="margin-left:4px">{{m.biz_line==='project'?'甲方':(m.biz_line==='channel'?'渠道':'通用')}}</span>
-            <el-button size="small" text type="primary" style="margin-left:8px"
-                       @click="triggerFile(m.id)">{{m.file_url?'📎 换附件':'📎 上传文件'}}</el-button>
-            <a v-if="m.file_url" :href="m.file_url" target="_blank" style="margin-left:4px;font-size:12px">查看附件</a>
-            <div class="body-pre" style="margin-top:8px;max-height:100px">{{m.content}}</div>
-            <!-- 文件预览 -->
-            <div v-if="m.file_url" style="margin-top:8px">
-              <img v-if="/\.(png|jpe?g|webp|gif|bmp)$/i.test(m.file_url)" :src="m.file_url"
-                   style="max-width:100%;max-height:200px;border-radius:6px;display:block"/>
-              <video v-else-if="/\.(mp4|mov|webm|avi|mkv)$/i.test(m.file_url)" :src="m.file_url"
-                     controls style="max-width:100%;max-height:240px;border-radius:6px;display:block"></video>
-              <a v-else :href="m.file_url" target="_blank">📄 {{fileName(m.file_url)}}</a>
-            </div>
-          </div>
-          <el-dialog v-model="matDlg" title="新增素材" width="560px">
-            <el-form label-width="70px">
-              <el-form-item label="分类"><el-select v-model="matForm.category"><el-option v-for="c in matCats" :key="c" :label="c" :value="c"></el-option></el-select></el-form-item>
-              <el-form-item label="业务线"><el-select v-model="matForm.biz_line"><el-option label="甲方线" value="project"/><el-option label="渠道线" value="channel"/><el-option label="通用" value="both"/></el-select></el-form-item>
-              <el-form-item label="标题"><el-input v-model="matForm.title"/></el-form-item>
-              <el-form-item label="内容"><el-input v-model="matForm.content" type="textarea" :rows="6" placeholder="文字说明；若是工地实拍可填设备/项目背景/亮点"/></el-form-item>
-              <el-form-item label="附件">
-                <input ref="matFileInput" type="file" accept="image/*,video/*,.pdf,.doc,.docx,.ppt,.pptx,.zip" @change="onMatFile"/>
-                <div v-if="matFile" style="margin-top:6px;font-size:12px;color:#666">已选：{{matFile.name}} ({{(matFile.size/1024/1024).toFixed(1)}} MB)</div>
-              </el-form-item>
-              <el-form-item label="公开级"><el-select v-model="matForm.publicity"><el-option label="可公开" value="public"/><el-option label="需脱敏" value="masked"/><el-option label="仅内部" value="internal"/></el-select></el-form-item>
-            </el-form>
-            <el-button type="primary" @click="saveMaterial" :loading="matSaving">保存</el-button>
-          </el-dialog>
-        </template>
-
-        <!-- 选题池 -->
-        <template v-if="page==='topics'">
-          <h3>选题池 <el-button size="small" type="primary" @click="topicDlg=true">+ 新增选题</el-button></h3>
-          <div class="card" v-for="t in topics" :key="t.id">
-            <el-tag size="small">{{t.theme}}</el-tag>
-            <span class="line-tag" :class="'line-'+t.biz_line" style="margin-left:6px">{{t.biz_line==='project'?'甲方线':'渠道线'}}</span>
-            <b style="margin-left:6px">{{t.title}}</b>
-            <span style="float:right">表现分 <b>{{t.score.toFixed(1)}}</b></span>
-            <div style="color:#909399;font-size:13px;margin-top:6px">{{t.angle}}</div>
-          </div>
-          <el-dialog v-model="topicDlg" title="新增选题" width="520px">
-            <el-form label-width="70px">
-              <el-form-item label="业务线"><el-select v-model="topicForm.biz_line"><el-option label="甲方线" value="project"/><el-option label="渠道线" value="channel"/></el-select></el-form-item>
-              <el-form-item label="主题"><el-input v-model="topicForm.theme" placeholder="如：工程商痛点/案例复盘"/></el-form-item>
-              <el-form-item label="选题"><el-input v-model="topicForm.title"/></el-form-item>
-              <el-form-item label="角度"><el-input v-model="topicForm.angle" type="textarea" :rows="3"/></el-form-item>
-            </el-form>
-            <el-button type="primary" @click="saveTopic">保存</el-button>
-          </el-dialog>
-        </template>
-
-        <!-- 线索看板 -->
-        <template v-if="page==='leads'">
-          <h3>线索看板 <el-button size="small" @click="simDlg=true">+ 录入评论/私信</el-button></h3>
-          <div class="card leadcard" :class="l.intent" v-for="l in leads" :key="l.id">
-            <span class="pf" :class="'pf-'+l.platform">{{pfName(l.platform)}}</span>
-            <b>{{l.visitor_name}}</b>
-            <span :class="'intent-'+l.intent" style="margin-left:8px">意向{{intentName(l.intent)}}</span>
-            <el-tag size="small" style="margin-left:6px">{{idName(l.identity)}}</el-tag>
-            <el-tag size="small" type="info" style="margin-left:6px">{{leadStatus(l.status)}}</el-tag>
-            <div style="margin-top:8px;font-size:14px">{{l.need_summary}}</div>
-            <div v-if="l.contact_info" style="color:#e6792f;font-size:13px">📞 {{l.contact_info}}</div>
-            <div v-if="l.reply_suggestion" style="color:#67c23a;font-size:13px;margin-top:4px">💬 {{l.reply_suggestion}}</div>
-            <div class="btnrow">
-              <el-select v-model="l.status" size="small" style="width:130px" @change="updateLead(l)">
-                <el-option v-for="s in ['new','contacted','wechat_added','opportunity','won','lost']" :key="s" :label="leadStatus(s)" :value="s"/>
-              </el-select>
-              <el-input v-model="l.assignee" size="small" placeholder="指派销售" style="width:110px" @change="updateLead(l)"></el-input>
-            </div>
-          </div>
-          <el-empty v-if="!leads.length" description="暂无线索"></el-empty>
-          <el-dialog v-model="simDlg" title="录入评论/私信（自动打标）" width="520px">
-            <el-form label-width="70px">
-              <el-form-item label="平台"><el-select v-model="interForm.platform"><el-option label="抖音" value="douyin"/><el-option label="视频号" value="shipinhao"/><el-option label="公众号" value="gzh"/><el-option label="小红书" value="xhs"/></el-select></el-form-item>
-              <el-form-item label="昵称"><el-input v-model="interForm.author_name"/></el-form-item>
-              <el-form-item label="内容"><el-input v-model="interForm.body" type="textarea" :rows="4" placeholder="粘贴评论或私信原文"/></el-form-item>
-            </el-form>
-            <el-button type="primary" @click="addInteraction">提交并AI打标</el-button>
-          </el-dialog>
-        </template>
-
-        <!-- 数据看板 -->
-        <template v-if="page==='dash'">
-          <h3>数据看板</h3>
-          <div class="grid5">
-            <div class="card stat"><div class="n">{{funnel.published}}</div><div class="l">已发布内容</div></div>
-            <div class="card stat"><div class="n">{{funnel.views}}</div><div class="l">总曝光</div></div>
-            <div class="card stat"><div class="n">{{funnel.interactions}}</div><div class="l">评论/私信</div></div>
-            <div class="card stat"><div class="n">{{funnel.leads}}</div><div class="l">线索总数</div></div>
-            <div class="card stat"><div class="n" style="color:#f56c6c">{{funnel.high_intent}}</div><div class="l">高意向</div></div>
-          </div>
-          <div class="card">
-            <h4>录入效果数据</h4>
-            <el-input-number v-model="metricForm.variant_id" :min="1" placeholder="版本ID" size="small"></el-input-number>
-            <el-input-number v-model="metricForm.views" :min="0" placeholder="播放" size="small"></el-input-number>
-            <el-input-number v-model="metricForm.likes" :min="0" placeholder="点赞" size="small"></el-input-number>
-            <el-input-number v-model="metricForm.comments" :min="0" placeholder="评论" size="small"></el-input-number>
-            <el-input-number v-model="metricForm.dm_inquiries" :min="0" placeholder="私信" size="small"></el-input-number>
-            <el-button size="small" type="primary" @click="saveMetric">保存</el-button>
-            <span style="color:#909399;font-size:12px;margin-left:8px">版本ID在内容管理展开可见；截图OCR识别二期接入</span>
-          </div>
-        </template>
-
-        <!-- 平台凭据设置（admin） -->
-        <template v-if="page==='accounts'">
-          <h3>平台凭据设置</h3>
-          <p style="color:#909399;font-size:13px">配置一次即可，token 自动续期。确认发布时系统自动调用官方API。</p>
-          <div class="card">
-            <h4 style="margin-top:0"><span class="pf pf-gzh">公众号</span></h4>
-            <el-form label-width="110px" style="max-width:480px">
-              <el-form-item label="AppID"><el-input v-model="accForm.gzh.appid" placeholder="公众号 AppID"/></el-form-item>
-              <el-form-item label="AppSecret"><el-input v-model="accForm.gzh.appsecret" type="password" show-password placeholder="公众号 AppSecret"/></el-form-item>
-              <el-button type="primary" size="small" @click="saveAcc('gzh')">保存公众号凭据</el-button>
-              <el-tag v-if="accState.gzh" size="small" type="success" style="margin-left:8px">已配置</el-tag>
-            </el-form>
-          </div>
-          <div class="card">
-            <h4 style="margin-top:0"><span class="pf pf-douyin">抖音企业号</span></h4>
-            <el-form label-width="110px" style="max-width:480px">
-              <el-form-item label="Client Key"><el-input v-model="accForm.douyin.appid" placeholder="开放平台 client_key"/></el-form-item>
-              <el-form-item label="Client Secret"><el-input v-model="accForm.douyin.appsecret" type="password" show-password/></el-form-item>
-              <el-form-item label="Open ID"><el-input v-model="accForm.douyin.open_id" placeholder="企业号授权后的 open_id"/></el-form-item>
-              <el-button type="primary" size="small" @click="saveAcc('douyin')">保存抖音凭据</el-button>
-              <el-tag v-if="accState.douyin" size="small" type="success" style="margin-left:8px">已配置</el-tag>
-            </el-form>
-          </div>
-        </template>
-
-      </div>
+      <nav class="menu">
+        <div v-for="m in menuItems" :key="m.key" class="menu-item" :class="{on: route===m.key}"
+             @click="navigate(m.key)">
+          <span class="menu-icon">{{ m.icon }}</span><span class="menu-text">{{ m.title }}</span>
+          <span v-if="m.badge" class="menu-badge">{{ m.badge }}</span>
+        </div>
+      </nav>
+      <main class="main">
+        <div v-if="routeError" class="page-state">
+          <el-result icon="warning" :title="routeError.title" :sub-title="routeError.sub">
+            <template #extra>
+              <el-button type="primary" @click="navigate(fallbackRoute)">返回可用页面</el-button>
+            </template>
+          </el-result>
+        </div>
+        <component v-else :is="currentPage"></component>
+      </main>
     </div>
   </template>
 </div>
-<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-<script src="https://unpkg.com/element-plus"></script>
-<script>
-const {createApp, ref, reactive, computed, onMounted} = Vue;
-createApp({
-  setup(){
-    const token = ref(localStorage.tk_token||'');
-    const user = reactive({name:'',role:''});
-    const page = ref('work');
-    const loading = ref(false);
-    const loginForm = reactive({username:'',password:''});
-    const todo = reactive({pending:[]});
-    const contents = ref([]); const materials = ref([]); const topics = ref([]);
-    const leads = ref([]); const funnel = reactive({published:0,views:0,interactions:0,leads:0,high_intent:0});
-    const rejectNote = ref(null);
-    const matDlg = ref(false), topicDlg = ref(false), simDlg = ref(false);
-    const matFilter = ref('');
-    const matForm = reactive({category:'案例',biz_line:'both',title:'',content:'',publicity:'public'});
-    const matFile = ref(null); const matSaving = ref(false); const matFileInput = ref(null);
-    const topicForm = reactive({biz_line:'project',theme:'',title:'',angle:''});
-    const interForm = reactive({platform:'douyin',author_name:'',body:''});
-    const metricForm = reactive({variant_id:1,stat_date:new Date().toISOString().slice(0,10),views:0,likes:0,comments:0,dm_inquiries:0});
-    const pendings = ref([]);
-    const workItems = ref([]);
-    const platStatus = ref([]);
-    const platMode = reactive({});
-    const selPlatform = ref('gzh');
-    const brImg = ref(''); const brLogged = ref(false); const brLoading = ref(false);
-    const accForm = reactive({gzh:{appid:'',appsecret:''},douyin:{appid:'',appsecret:'',open_id:''}});
-    const accState = reactive({gzh:false,douyin:false});
-    const matCats = ['公司简介','品牌代理','产品明细','案例','工地实拍','资质荣誉','服务能力','企业文化','FAQ','其他'];
 
-    const H = ()=>({'Authorization':'Bearer '+token.value,'Content-Type':'application/json'});
-    async function req(url, opt={}){
-      const isForm = opt.isForm; delete opt.isForm;
-      opt.headers = {...H(), ...(opt.headers||{})};
-      // FormData 时不要设 Content-Type，让浏览器自动带 boundary
-      if(!isForm && opt.body && typeof opt.body==='string' && !opt.headers['Content-Type'])
-        opt.headers['Content-Type']='application/json';
-      const r = await fetch('/api'+url, opt);
-      if(r.status===401){logout();throw new Error('登录失效')}
-      return r.json();
-    }
-    async function doLogin(){
-      loading.value=true;
-      try{
-        const d = await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(loginForm)}).then(r=>r.json());
-        if(d.token){token.value=d.token;localStorage.tk_token=d.token;Object.assign(user,d.user);go('work');}
-        else ElementPlus.ElMessage.error(d.detail||'登录失败');
-      }finally{loading.value=false}
-    }
-    function logout(){token.value='';delete localStorage.tk_token}
-    async function go(p){page.value=p;await refresh()}
-    async function refresh(){
-      req('/confirm/pending').then(d=>{if(page.value!=='confirm')pendings.value=d}).catch(()=>{});
-      if(page.value==='todo') Object.assign(todo, await req('/todo/today'));
-      if(page.value==='contents') contents.value = await req('/contents');
-      if(page.value==='materials') materials.value = await req('/materials');
-      if(page.value==='topics') topics.value = await req('/topics');
-      if(page.value==='leads') leads.value = await req('/leads');
-      if(page.value==='dash') Object.assign(funnel, await req('/dashboard/funnel'));
-      if(page.value==='confirm') pendings.value = await req('/confirm/pending');
-      if(page.value==='accounts') loadAccounts();
-      if(page.value==='work') loadWork();
-    }
-    async function loadWork(){
-      try{
-        const [p, t, acc, fun] = await Promise.all([
-          req('/confirm/pending'), req('/todo/today'),
-          req('/accounts/status'), req('/dashboard/funnel')]);
-        pendings.value = p;
-        workItems.value = [...p, ...(t.pending||[]).filter(x=>x.confirm_status!=='pending'&&!x.published_url)];
-        platStatus.value = acc;
-        for(const a of acc) platMode[a.platform]=a.mode;
-        Object.assign(funnel, fun);
-      }catch(e){}
-      openBrowser();
-    }
-    async function openBrowser(){
-      brLoading.value=true;brImg.value='';brLogged.value=false;
-      try{
-        const d = await req('/browser/'+selPlatform.value+'/open');
-        if(d.error){ElementPlus.ElMessage.warning('右侧窗口加载失败：'+d.error)}
-        brImg.value=d.img||'';brLogged.value=!!d.logged_in;
-      }catch(e){
-        brImg.value='';brLogged.value=false;
-        ElementPlus.ElMessage.error('右侧窗口请求失败：'+(e.message||'接口异常'));
-      }
-      brLoading.value=false;
-    }
-    async function refreshBrShot(){
-      try{
-        const d=await req('/browser/'+selPlatform.value+'/screenshot');
-        if(d.img)brImg.value=d.img;
-        brLogged.value=!!d.logged_in;
-      }catch(e){}
-    }
-    async function workConfirm(v){
-      v._busy=true;
-      try{
-        // 公众号/抖音/小红书/视频号都走右侧浏览器代理填稿
-        const browserPlats=['gzh','douyin','xhs','shipinhao'];
-        if(browserPlats.includes(v.platform)){
-          const d = await req('/browser/'+v.platform+'/publish',{method:'POST',body:JSON.stringify({title:v.content_title||v.cover_text||'未命名',body_html:v.body.replace(/\n/g,'<br/>'),biz_line:v.biz_line||'channel'})});
-          selPlatform.value=v.platform;openBrowser();
-          if(d.ok){
-            v.publish_status='published';
-            ElementPlus.ElMessage.success(d.note||('已填入'+pfName(v.platform)+'后台，请到右侧窗口确认 🎉'));
-          }
-          else if(d.need_login){ElementPlus.ElMessage.warning(pfName(v.platform)+'未登录，请先在右侧扫码')}
-          else {v.publish_status='failed';v.publish_error=d.err;ElementPlus.ElMessage.error(d.err||'发布失败')}
-        }else{
-          const d = await req('/variants/'+v.id+'/confirm',{method:'POST'});
-          if(d.publish_result && d.publish_result.ok){v.publish_status='published';ElementPlus.ElMessage.success('已发布 🎉')}
-          else{
-            const err=(d.publish_result&&d.publish_result.err)||'';
-            navigator.clipboard.writeText(v.body+'\n'+(v.hashtags||''));
-            const home={douyin:'https://creator.douyin.com',shipinhao:'https://channels.weixin.qq.com',xhs:'https://creator.xiaohongshu.com'}[v.platform];
-            ElementPlus.ElMessage.warning((err?err+'；':'')+'文案已复制，去'+pfName(v.platform)+'后台粘贴即可');
-            if(home)window.open(home,'_blank');
-            v.publish_status='failed';v.publish_error=err;
-          }
-        }
-      }finally{v._busy=false;loadWork()}
-    }
-    function copyAndOpen(v){
-      navigator.clipboard.writeText(v.body+'\n'+(v.hashtags||''));
-      const home={gzh:'https://mp.weixin.qq.com',douyin:'https://creator.douyin.com',shipinhao:'https://channels.weixin.qq.com',xhs:'https://creator.xiaohongshu.com'}[v.platform];
-      if(home){window.open(home,'_blank');ElementPlus.ElMessage.success('文案已复制，'+pfName(v.platform)+'后台已打开')}
-      else ElementPlus.ElMessage.success('文案已复制');
-    }
-    async function loadAccounts(){
-      try{
-        const list = await req('/accounts');
-        for(const a of list){
-          accState[a.platform] = a.configured;
-          if(a.platform==='gzh'){accForm.gzh.appid=a.appid}
-          if(a.platform==='douyin'){accForm.douyin.appid=a.appid;accForm.douyin.open_id=(a.extra||{}).open_id||''}
-        }
-      }catch(e){}
-    }
-    async function saveAcc(pf){
-      const f = accForm[pf];
-      await req('/accounts',{method:'POST',body:JSON.stringify({platform:pf,appid:f.appid,appsecret:f.appsecret,extra:{open_id:f.open_id||''}})});
-      ElementPlus.ElMessage.success('已保存');loadAccounts();
-    }
-    async function confirmPub(v){
-      v._busy=true;
-      try{
-        const d = await req('/variants/'+v.id+'/confirm',{method:'POST'});
-        if(d.publish_result && d.publish_result.ok){v.publish_status='published';ElementPlus.ElMessage.success('已确认并自动发布成功 🎉')}
-        else{v.publish_status='failed';v.publish_error=(d.publish_result&&d.publish_result.err)||'发布失败';ElementPlus.ElMessage.error(v.publish_error)}
-      }finally{v._busy=false}
-    }
-    async function rejectPub(v){
-      await req('/variants/'+v.id+'/confirm-reject',{method:'POST'});
-      pendings.value = pendings.value.filter(x=>x.id!==v.id);
-      ElementPlus.ElMessage.info('已驳回');
-    }
-    async function genDaily(){loading.value=true;const d=await req('/generate/daily',{method:'POST'});loading.value=false;ElementPlus.ElMessage.success(d.msg||'已开始生成，约2-4分钟后到工作台查看');}
-    function copy(v){navigator.clipboard.writeText(v.body+'\n'+v.hashtags);ElementPlus.ElMessage.success('文案已复制')}
-    async function markPublished(v){if(!v._url)return ElementPlus.ElMessage.warning('请粘贴发布链接');await req('/variants/'+v.id+'/publish',{method:'POST',body:JSON.stringify({published_url:v._url})});ElementPlus.ElMessage.success('已标记');refresh()}
-    async function saveVariant(v){await req('/variants/'+v.id,{method:'PUT',body:JSON.stringify({body:v.body,hashtags:v.hashtags})});ElementPlus.ElMessage.success('已保存')}
-    async function review(c,a,note){await req('/contents/'+c.id+'/review',{method:'POST',body:JSON.stringify({action:a,note:note||''})});rejectNote.value=null;refresh()}
-    function onMatFile(e){matFile.value=e.target.files[0]||null}
-    function fileName(url){try{return decodeURIComponent(url.split('/').pop().replace(/^[0-9a-f]{32}_/,''))}catch(e){return url}}
-    async function triggerFile(mid){
-      const inp=document.createElement('input');inp.type='file';inp.accept='image/*,video/*,.pdf,.doc,.docx,.ppt,.pptx,.zip';
-      inp.onchange=async e=>{
-        const f=e.target.files[0];if(!f)return;
-        const fd=new FormData();fd.append('f',f);
-        try{await req('/materials/'+mid+'/file',{method:'POST',body:fd,isForm:true});
-          ElementPlus.ElMessage.success('附件已上传');refresh()}catch(e2){ElementPlus.ElMessage.error('上传失败')}
-      };
-      inp.click();
-    }
-    async function saveMaterial(){
-      matSaving.value=true;
-      try{
-        const m=await req('/materials',{method:'POST',body:JSON.stringify(matForm)});
-        if(matFile.value){
-          const fd=new FormData();fd.append('f',matFile.value);
-          await req('/materials/'+m.id+'/file',{method:'POST',body:fd,isForm:true});
-        }
-        matDlg.value=false;matFile.value=null;if(matFileInput.value)matFileInput.value.value='';
-        ElementPlus.ElMessage.success('已保存');refresh();
-      }catch(e){ElementPlus.ElMessage.error('保存失败：'+e.message)}
-      finally{matSaving.value=false}
-    }
-    async function saveTopic(){await req('/topics',{method:'POST',body:JSON.stringify(topicForm)});topicDlg.value=false;refresh()}
-    async function addInteraction(){const d=await req('/interactions',{method:'POST',body:JSON.stringify(interForm)});simDlg.value=false;ElementPlus.ElMessage.success('已打标：'+d.lead.intent);refresh()}
-    async function updateLead(l){await req('/leads/'+l.id,{method:'PUT',body:JSON.stringify({status:l.status,assignee:l.assignee})});ElementPlus.ElMessage.success('已更新')}
-    async function saveMetric(){await req('/metrics',{method:'POST',body:JSON.stringify(metricForm)});ElementPlus.ElMessage.success('已录入');refresh()}
-
-    const filteredMaterials = computed(()=>matFilter.value?materials.value.filter(m=>m.category===matFilter.value):materials.value);
-    const pfName = p=>({douyin:'抖音',shipinhao:'视频号',gzh:'公众号',xhs:'小红书',moments:'朋友圈'}[p]||p);
-    const statusName = s=>({draft:'待审核',approved:'已通过',rejected:'已驳回',published:'已发布',archived:'归档'}[s]||s);
-    const pubName = p=>({public:'可公开',masked:'需脱敏',internal:'仅内部'}[p]||p);
-    const intentName = i=>({high:'高',mid:'中',low:'低',junk:'垃圾'}[i]||i);
-    const idName = i=>({contractor:'工程商',owner:'甲方',unknown:'未知'}[i]||i);
-    const leadStatus = s=>({new:'新线索',contacted:'已联系',wechat_added:'已加微',opportunity:'商机',won:'成交',lost:'无效'}[s]||s);
-    const roleName = computed(()=>({admin:'管理员',operator:'运营',sales:'销售'}[user.role]||user.role));
-
-    onMounted(async()=>{if(token.value){try{Object.assign(user,await req('/auth/me'));refresh()}catch(e){}}
-      // 浏览器画面轮询：未登录时每4秒刷新看是否扫码成功
-      setInterval(()=>{if(page.value==='work'&&!brLogged.value&&brImg.value)refreshBrShot()},4000);
-    });
-    return {token,user,page,loading,loginForm,todo,contents,materials,topics,leads,funnel,rejectNote,
-      matDlg,topicDlg,simDlg,matFilter,matForm,topicForm,interForm,metricForm,matCats,filteredMaterials,
-      matFile,matSaving,matFileInput,onMatFile,fileName,triggerFile,
-      pendings,accForm,accState,loadAccounts,saveAcc,confirmPub,rejectPub,
-      workItems,platStatus,platMode,loadWork,workConfirm,copyAndOpen,
-      selPlatform,brImg,brLogged,brLoading,openBrowser,refreshBrShot,
-      doLogin,logout,go,genDaily,copy,markPublished,saveVariant,review,saveMaterial,saveTopic,
-      addInteraction,updateLead,saveMetric,pfName,statusName,pubName,intentName,idName,leadStatus,roleName};
-  }
-}).use(ElementPlus).mount('#app');
-</script>
+<script src="./vendor/vue.global.prod.js"></script>
+<script src="./vendor/element-plus/index.full.js"></script>
+<script src="./vendor/element-plus/locale-zh-cn.js"></script>
+<script type="module" src="./js/app.js"></script>
 </body>
 </html>
