@@ -103,6 +103,32 @@ body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:
 .el-table .cell{font-size:13px}
 .tag-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 
+/* ---------- P0 工作台（内容池 + 平台通道） ---------- */
+.wk-wrap{display:flex;gap:18px;align-items:flex-start}
+.wk-pool{flex:1;min-width:0}
+.wk-channels{width:520px;flex-shrink:0}
+.wk-cover .muted{margin-left:auto}
+.wk-card{cursor:grab;border-left:3px solid #dcdfe6}
+.wk-card:active{cursor:grabbing}
+.wk-card.dragging{opacity:.45;border-left-color:#409eff}
+.wk-tabs{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap}
+.wk-tab{position:relative;padding:7px 16px;border:1px solid #dcdfe6;border-radius:6px;background:#fff;
+  font-size:13px;color:#606266;cursor:pointer;user-select:none}
+.wk-tab:hover{border-color:#409eff;color:#409eff}
+.wk-tab.on{background:#409eff;border-color:#409eff;color:#fff}
+.wk-tab.over{border-color:#409eff;background:#ecf5ff;color:#409eff;box-shadow:0 0 0 2px rgba(64,158,255,.25)}
+.wk-tab.on.over{background:#409eff;color:#fff}
+.wk-tab-dot{position:absolute;top:4px;right:6px;width:6px;height:6px;border-radius:50%;background:#f56c6c}
+.wk-dropzone{border:1px dashed #dcdfe6;border-radius:8px;padding:14px;background:#fafbfc;transition:.15s}
+.wk-dropzone.over{background:#ecf5ff;border-color:#409eff;box-shadow:0 0 0 2px rgba(64,158,255,.18)}
+.wk-composer-head{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.wk-fields{display:flex;flex-direction:column;gap:12px}
+.wk-label{display:block;font-size:12px;color:#909399;margin-bottom:4px}
+.wk-media{border:1px dashed #dcdfe6;border-radius:6px;padding:10px;background:#fff}
+.wk-media-note{font-size:13px;color:#303133;margin:6px 0}
+.wk-media-none{font-size:12px;color:#e6a23c;margin:6px 0}
+.wk-actions{gap:8px}
+
 /* ---------- 响应式 ---------- */
 @media(max-width:1100px){.grid5{grid-template-columns:repeat(3,1fr)}.kanban{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:860px){
@@ -112,5 +138,7 @@ body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:
   .menu-badge{position:absolute;margin:0}
   .grid5,.grid3,.kanban{grid-template-columns:repeat(2,1fr)}
   .main{padding:12px}
+  .wk-wrap{flex-direction:column}
+  .wk-channels{width:100%}
 }
 @media(max-width:560px){.grid5,.grid3,.kanban{grid-template-columns:1fr}}
