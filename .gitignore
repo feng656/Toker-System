@@ -13,6 +13,7 @@ storage/
 # 本地 Agent / 平台运行痕迹
 .claude/
 .pios/
+.pipeline/
 stage-result.json
 
 # 内部资料，不随公开仓库分发
