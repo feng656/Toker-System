@@ -1,0 +1,17 @@
+# 本地配置与密钥
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# 运行产物
+uploads/
+storage/
+*.log
+
+# 内部资料，不随公开仓库分发
+操作说明.md
+部署说明.md
+操作演示.mp4
+奇迹于你和浆果的分工.docx
