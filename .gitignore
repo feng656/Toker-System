@@ -10,6 +10,11 @@ uploads/
 storage/
 *.log
 
+# 本地 Agent / 平台运行痕迹
+.claude/
+.pios/
+stage-result.json
+
 # 内部资料，不随公开仓库分发
 操作说明.md
 部署说明.md
