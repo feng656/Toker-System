@@ -1,0 +1,25 @@
+# Secrets and runtime state
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.sqlite
+*.sqlite3
+var/
+browser_state/
+video_out/
+uploads/
+# Python and local reports
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage*
+htmlcov/
+reports/
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

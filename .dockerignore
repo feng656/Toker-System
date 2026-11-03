@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+!.env.example
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.coverage*
+reports
+var
+browser_state
+video_out
+*.mp4
+*.bundle

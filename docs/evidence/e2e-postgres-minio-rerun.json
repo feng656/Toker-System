@@ -1,0 +1,104 @@
+{
+  "mode": "configured",
+  "status": "passed",
+  "demo_ai": true,
+  "ocr": "deterministic-fixture",
+  "push": "HTTP-transport-fixture",
+  "steps": [
+    {
+      "step": "1 素材与双业务线选题",
+      "status": "passed",
+      "result": {
+        "materials": 3,
+        "biz_lines": [
+          "project",
+          "channel"
+        ]
+      }
+    },
+    {
+      "step": "2 生成2×4平台版本",
+      "status": "passed",
+      "result": {
+        "contents": 2,
+        "variants": 8,
+        "task_id": 1
+      }
+    },
+    {
+      "step": "3 驳回并保留历史/新版本",
+      "status": "passed",
+      "result": {
+        "old_id": 5,
+        "new_id": 9,
+        "history_count": 2
+      }
+    },
+    {
+      "step": "4 通过7条并进入待办",
+      "status": "passed",
+      "result": {
+        "target_approved": 7,
+        "pending_now": 6,
+        "already_published_on_rerun": 1
+      }
+    },
+    {
+      "step": "5 有效链接回填，空链接不计数",
+      "status": "passed",
+      "result": {
+        "variant_id": 6,
+        "published_url": "https://www.douyin.com/video/7300000000000000006",
+        "url_existence_verified": false
+      }
+    },
+    {
+      "step": "6 指标截图，确认前不入库",
+      "status": "passed",
+      "result": {
+        "task_id": 1,
+        "views": 1000,
+        "likes": 32,
+        "no_write_before_review": true
+      }
+    },
+    {
+      "step": "7 评论截图确认、互动、高意向线索与去重",
+      "status": "passed",
+      "result": {
+        "lead_id": 1,
+        "intent": "high",
+        "dedup": "merged",
+        "repeat": true
+      }
+    },
+    {
+      "step": "8 指派销售、队列可追踪/投递",
+      "status": "passed",
+      "result": {
+        "assignee": "sales01",
+        "events_sent": 6,
+        "delivery": "simulated-not-real-wecom",
+        "http_calls": 0
+      }
+    },
+    {
+      "step": "9 看板与明细一致",
+      "status": "passed",
+      "result": {
+        "published": 1,
+        "views": 1000,
+        "interactions": 2,
+        "leads": 1,
+        "high_intent": 1
+      }
+    }
+  ],
+  "limitations": [
+    "AI为显式演示结果",
+    "OCR为可重复解析替身，真实引擎另行检查",
+    "企微/CRM传输替身，不代表用户收到通知",
+    "URL仅格式验证，不验证文章存在",
+    "未修改前端，等待双方联调"
+  ]
+}
