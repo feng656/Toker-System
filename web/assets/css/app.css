@@ -1,0 +1,144 @@
+/* 自由光·拓客系统 前端样式
+ * 视觉沿用原型版（深色顶栏 + 左侧菜单 + 白色卡片），仅做工程化整理与必要的状态态补充。
+ */
+[v-cloak]{display:none}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:#f5f7fa;color:#303133}
+
+/* ---------- 登录 ---------- */
+.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(160deg,#1f2d3d,#2b3f56)}
+.login-card{width:360px;background:#fff;border-radius:12px;padding:30px 28px;box-shadow:0 12px 40px rgba(0,0,0,.25)}
+.login-brand{font-size:20px;font-weight:700;color:#1f2d3d}
+.login-sub{font-size:12px;color:#909399;margin:6px 0 20px}
+.login-foot{margin-top:16px;font-size:12px;color:#909399;line-height:1.7;border-top:1px solid #ebeef5;padding-top:12px}
+
+/* ---------- 框架 ---------- */
+.topbar{background:#1f2d3d;color:#fff;padding:0 20px;height:56px;display:flex;align-items:center;justify-content:space-between}
+.topbar-left{display:flex;align-items:baseline;gap:10px}
+.topbar-left b{font-size:17px}
+.topbar-env{font-size:11px;color:#a9b6c6;border:1px solid #46586c;border-radius:10px;padding:1px 8px}
+.topbar-right{display:flex;align-items:center;gap:14px;font-size:13px}
+.topbar-mode{color:#a9b6c6;font-size:12px}
+.topbar-user{color:#e6ecf3}
+.layout{display:flex;min-height:calc(100vh - 56px)}
+.menu{width:186px;background:#fff;padding:10px 0;border-right:1px solid #e4e7ed;flex-shrink:0}
+.menu-item{display:flex;align-items:center;gap:8px;padding:11px 18px;cursor:pointer;color:#606266;font-size:14px;border-right:3px solid transparent}
+.menu-item:hover{background:#f6f8fa}
+.menu-item.on{color:#409eff;border-right-color:#409eff;background:#ecf5ff}
+.menu-icon{width:18px;text-align:center}
+.menu-badge{margin-left:auto;background:#f56c6c;color:#fff;border-radius:10px;font-size:11px;padding:0 7px;line-height:18px}
+.main{flex:1;padding:18px;overflow:auto;min-width:0}
+
+/* ---------- 通用页面元素 ---------- */
+.page-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.page-title{font-size:17px;font-weight:600;color:#303133}
+.page-sub{font-size:12px;color:#909399;margin-top:4px;line-height:1.7;max-width:960px}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.card{background:#fff;border-radius:8px;padding:16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.card-title{font-size:15px;font-weight:600;color:#303133;margin:0 0 10px}
+.muted{color:#909399;font-size:12px}
+.tiny{font-size:12px}
+.right{float:right}
+.mt6{margin-top:6px}.mt10{margin-top:10px}.mt14{margin-top:14px}
+.mb10{margin-bottom:10px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.row .el-input,.row .el-select{margin:0}
+.hit{color:#f56c6c;font-size:12px}
+.ok{color:#67c23a;font-size:13px}
+.warn{color:#e6a23c;font-size:13px}
+.err{color:#f56c6c;font-size:13px}
+
+/* ---------- 平台 / 业务线 / 状态标签 ---------- */
+.pf{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;color:#fff;margin-right:6px}
+.pf-douyin{background:#000}.pf-shipinhao{background:#07c160}.pf-gzh{background:#1aad19}.pf-xhs{background:#ff2442}.pf-moments{background:#576b95}
+.line-tag{font-size:12px;padding:1px 6px;border-radius:3px}
+.line-project{background:#e8f4ff;color:#1d7dcf}.line-channel{background:#fef0e6;color:#e6792f}.line-both{background:#f0f2f5;color:#606266}
+.intent-high{color:#f56c6c;font-weight:bold}.intent-mid{color:#e6a23c}.intent-low{color:#909399}.intent-junk{color:#c0c4cc}
+.leadcard{border-left:4px solid #dcdfe6}
+.leadcard.high{border-left-color:#f56c6c}
+.leadcard.mid{border-left-color:#e6a23c}
+.leadcard.low{border-left-color:#909399}
+.leadcard.junk{border-left-color:#c0c4cc}
+
+/* ---------- 内容块 ---------- */
+.body-pre{white-space:pre-wrap;background:#fafafa;padding:10px;border-radius:6px;font-size:13px;max-height:180px;overflow:auto;line-height:1.7}
+.grid5{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.stat{text-align:center;padding:14px}
+.stat .n{font-size:26px;font-weight:bold;color:#303133}
+.stat .n.g-hot{color:#f56c6c}
+.stat .n.g-warn{color:#e6a23c}
+.stat .l{color:#909399;font-size:13px;margin-top:4px}
+.stat .d{color:#c0c4cc;font-size:11px;margin-top:2px}
+
+/* ---------- 状态提示（加载 / 出错 / 空 / 无权限） ---------- */
+.page-state{background:#fff;border-radius:8px;padding:30px 10px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.state-box{padding:26px 12px;text-align:center;color:#909399;font-size:13px}
+.state-box .el-icon{font-size:26px;display:block;margin-bottom:8px;color:#c0c4cc}
+.state-error .el-icon{color:#f56c6c}
+.state-forbidden .el-icon{color:#e6a23c}
+.skeleton-wrap{padding:6px 0}
+
+/* ---------- 弹窗与提示条 ---------- */
+.alert-strip{border-radius:6px;padding:9px 12px;font-size:13px;line-height:1.7;margin-bottom:12px}
+.alert-strip.info{background:#ecf5ff;color:#409eff;border-left:3px solid #409eff}
+.alert-strip.warn{background:#fdf6ec;color:#b88230;border-left:3px solid #e6a23c}
+.alert-strip.error{background:#fef0f0;color:#d93026;border-left:3px solid #f56c6c}
+.alert-strip.ok{background:#f0f9eb;color:#529b2e;border-left:3px solid #67c23a}
+.gap-note{background:#f6f7f9;color:#909399;font-size:12px;border:1px dashed #dcdfe6;border-radius:6px;padding:8px 10px;margin-top:10px;line-height:1.7}
+.kv{display:grid;grid-template-columns:96px 1fr;gap:6px 10px;font-size:13px;line-height:1.8}
+.kv .k{color:#909399}
+
+/* ---------- 看板 ---------- */
+.kanban{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.kanban-col{background:#f7f8fa;border-radius:8px;padding:10px;min-height:120px}
+.kanban-head{display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:600;color:#606266;margin-bottom:8px}
+.kanban-item{background:#fff;border-radius:6px;padding:10px;margin-bottom:8px;box-shadow:0 1px 2px rgba(0,0,0,.06);cursor:pointer}
+.kanban-item:hover{box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.kanban-item .t{font-size:13px;font-weight:600;color:#303133;margin:6px 0 4px}
+.kanban-item .d{font-size:12px;color:#909399;line-height:1.6;max-height:56px;overflow:hidden}
+
+/* ---------- 表格 ---------- */
+.el-table .cell{font-size:13px}
+.tag-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+
+/* ---------- P0 工作台（内容池 + 平台通道） ---------- */
+.wk-wrap{display:flex;gap:18px;align-items:flex-start}
+.wk-pool{flex:1;min-width:0}
+.wk-channels{width:520px;flex-shrink:0}
+.wk-cover .muted{margin-left:auto}
+.wk-card{cursor:grab;border-left:3px solid #dcdfe6}
+.wk-card:active{cursor:grabbing}
+.wk-card.dragging{opacity:.45;border-left-color:#409eff}
+.wk-tabs{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap}
+.wk-tab{position:relative;padding:7px 16px;border:1px solid #dcdfe6;border-radius:6px;background:#fff;
+  font-size:13px;color:#606266;cursor:pointer;user-select:none}
+.wk-tab:hover{border-color:#409eff;color:#409eff}
+.wk-tab.on{background:#409eff;border-color:#409eff;color:#fff}
+.wk-tab.over{border-color:#409eff;background:#ecf5ff;color:#409eff;box-shadow:0 0 0 2px rgba(64,158,255,.25)}
+.wk-tab.on.over{background:#409eff;color:#fff}
+.wk-tab-dot{position:absolute;top:4px;right:6px;width:6px;height:6px;border-radius:50%;background:#f56c6c}
+.wk-dropzone{border:1px dashed #dcdfe6;border-radius:8px;padding:14px;background:#fafbfc;transition:.15s}
+.wk-dropzone.over{background:#ecf5ff;border-color:#409eff;box-shadow:0 0 0 2px rgba(64,158,255,.18)}
+.wk-composer-head{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.wk-fields{display:flex;flex-direction:column;gap:12px}
+.wk-label{display:block;font-size:12px;color:#909399;margin-bottom:4px}
+.wk-media{border:1px dashed #dcdfe6;border-radius:6px;padding:10px;background:#fff}
+.wk-media-note{font-size:13px;color:#303133;margin:6px 0}
+.wk-media-none{font-size:12px;color:#e6a23c;margin:6px 0}
+.wk-actions{gap:8px}
+
+/* ---------- 响应式 ---------- */
+@media(max-width:1100px){.grid5{grid-template-columns:repeat(3,1fr)}.kanban{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:860px){
+  .menu{width:64px}
+  .menu-text{display:none}
+  .menu-item{justify-content:center;padding:12px 0}
+  .menu-badge{position:absolute;margin:0}
+  .grid5,.grid3,.kanban{grid-template-columns:repeat(2,1fr)}
+  .main{padding:12px}
+  .wk-wrap{flex-direction:column}
+  .wk-channels{width:100%}
+}
+@media(max-width:560px){.grid5,.grid3,.kanban{grid-template-columns:1fr}}

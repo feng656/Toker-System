@@ -23,3 +23,10 @@ reports/
 .DS_Store
 .idea/
 .vscode/
+
+# Local agent artifacts / internal docs (frontend collaboration)
+.claude/
+.pipeline/
+stage-result.json
+奇迹于你和浆果的分工.docx
+操作演示.mp4
