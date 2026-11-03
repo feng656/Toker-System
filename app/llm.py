@@ -1,116 +1,103 @@
-"""大模型调用封装：多 provider 故障转移（DeepSeek → GLM → Kimi）。
-全部走 OpenAI 兼容接口。配置见 .env 的 LLM_PROVIDERS JSON。
-"""
+"""有界超时、逐次调用留痕。未配置时明确失败，不把占位结果冒充生产输出。"""
+import hashlib
 import json
-import os
-from pathlib import Path
-
-_env = Path(__file__).resolve().parent.parent / ".env"
-if _env.exists():
-    for line in _env.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip())
-
-# 默认三家池子，env 里可用 LLM_PROVIDERS JSON 覆盖
-PROVIDERS = json.loads(os.environ.get("LLM_PROVIDERS", "null")) or [
-    {"name": "deepseek", "base_url": "https://api.deepseek.com/v1",
-     "model": "deepseek-chat", "key": os.environ.get("DEEPSEEK_KEY", "")},
-    {"name": "glm", "base_url": "https://open.bigmodel.cn/api/paas/v4",
-     "model": "glm-4.5-flash", "key": os.environ.get("GLM_KEY", "")},
-    {"name": "kimi", "base_url": "https://api.moonshot.cn/v1",
-     "model": "kimi-k2.6", "key": os.environ.get("KIMI_KEY", "")},
-]
-
-_active = None  # 当前可用 provider 名
+import re
+import time
+import httpx
+from sqlalchemy.orm import Session
+from . import config
+from .models import AIJob
 
 
-def _glm_token(key: str) -> str:
-    """智谱 GLM 用 JWT(APIKey.APISecret 签名) 而非直接 Bearer。"""
-    import base64, hashlib, hmac, json as _j, time
-    kid, sec = key.split(".")
-    def b64(b): return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
-    h = b64(_j.dumps({"alg": "HS256", "sign_type": "SIGN"}).encode())
-    p = b64(_j.dumps({"api_key": kid, "exp": int(time.time() * 1000) + 3600000,
-                      "timestamp": int(time.time() * 1000)}).encode())
-    s = b64(hmac.new(sec.encode(), f"{h}.{p}".encode(), hashlib.sha256).digest())
-    return f"{h}.{p}.{s}"
+class AIUnavailable(RuntimeError):
+    pass
 
 
-def _try(p: dict, system: str, user: str, json_mode: bool) -> str | None:
-    if not p["key"]:
-        return None
-    try:
-        from openai import OpenAI
-        key = p["key"]
-        if p["name"] == "glm":          # GLM 需要 JWT 签名
-            key = _glm_token(key)
-        client = OpenAI(api_key=key, base_url=p["base_url"], timeout=60)
-        kw = {"response_format": {"type": "json_object"}} if json_mode else {}
-        r = client.chat.completions.create(
-            model=p["model"],
-            messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-            **kw)
-        return r.choices[0].message.content or ""
-    except Exception as e:
-        print(f"[llm] {p['name']} fail: {e}", flush=True)
-        return None
+def _demo(kind, context):
+    """仅显式 DEMO_MODE 下使用的确定性验收数据。"""
+    if kind == 'quality':
+        return {'score': 90, 'note': '演示评审；生产须由真实AI评估', 'issues': []}
+    if kind == 'classify':
+        body = context.get('body', '')
+        phone = re.search(r'(?<!\d)1[3-9]\d{9}(?!\d)', re.sub(r'[\s-]', '', body))
+        wx = re.search(r'(?:微信|wechat|wx)[:：\s]*([a-zA-Z][\w-]{5,19})', body, re.I)
+        return {'identity': 'contractor' if any(t in body for t in ('工程', '投标', '安装队')) else 'owner' if any(t in body for t in ('单位', '采购')) else 'unknown',
+                'intent': 'high' if any(t in body for t in ('询价', '报价', '项目', '电话', '微信', '合作', '送货')) else 'mid' if '型号' in body else 'low',
+                'need_summary': body[:500], 'contact_info': phone.group() if phone else wx.group(1) if wx else '',
+                'brand_need': 'LED' if 'LED' in body.upper() else '',
+                'reply_suggestion': '可私信说明项目需求和交付地区，我们提供正品现货与技术支持。'}
+    if kind == 'weekly':
+        return {'report_md': '## 演示周报\n数据以看板为准。演示模式未调用外部AI。'}
+    topic = context.get('title', 'LED项目方案')
+    required = context.get('required', ['私信询价'])
+    reason = context.get('reason', '')
+    def variant(platform):
+        return {'body': f'【演示文案·{platform}】{topic}。按项目场景核对选型、交付和技术服务能力。{("本版根据审核意见调整：" + reason) if reason else ""}。' + '，'.join(required),
+                'cover_text': topic[:150], 'hashtags': '#弱电 #项目交付', 'best_time': '18:00-20:00',
+                'image_prompt': '使用已经授权的产品或案例实拍'}
+    if kind == 'regenerate':
+        return variant(context['platform'])
+    return {pf: variant(pf) for pf in ('douyin', 'shipinhao', 'gzh', 'moments')}
 
 
-import threading
-_lock = threading.Lock()
+def call_json(db: Session, kind: str, system: str, user: str,
+              resource_id=None, context=None) -> dict:
+    context = context or {}
+    digest = hashlib.sha256((system + user).encode()).hexdigest()
+    providers = config.LLM_PROVIDERS
+    if config.DEMO_MODE:
+        providers = [{'name': 'demo', 'model': 'deterministic-fixture', 'demo': True}]
+    if not providers:
+        audit = dict(kind=kind, resource_id=resource_id, input_hash=digest,
+                     status='failed', error='未配置AI服务，需配置LLM_PROVIDERS或显式启用演示模式')
+        db.add(AIJob(**audit))
+        if 'ai_audit' in db.info:
+            db.info['ai_audit'].append(audit)
+        db.flush()
+        raise AIUnavailable('未配置AI服务')
+    errors = []
+    for p in providers[:3]:
+        job = AIJob(kind=kind, resource_id=resource_id, input_hash=digest,
+                    provider=p.get('name', 'configured'), model=p.get('model', ''),
+                    demo=bool(p.get('demo')))
+        db.add(job)
+        db.flush()
+        start = time.monotonic()
+        try:
+            if p.get('demo'):
+                data = _demo(kind, context)
+            else:
+                r = httpx.post(p['base_url'].rstrip('/') + '/chat/completions',
+                               headers={'Authorization': 'Bearer ' + p['key']},
+                               json={'model': p['model'], 'messages': [
+                                   {'role': 'system', 'content': system},
+                                   {'role': 'user', 'content': user}],
+                                     'response_format': {'type': 'json_object'}},
+                               timeout=config.LLM_TIMEOUT, follow_redirects=False)
+                r.raise_for_status()
+                raw = r.json()['choices'][0]['message']['content']
+                raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip())
+                data = json.loads(raw)
+            if not isinstance(data, dict) or not data:
+                raise ValueError('AI必须返回非空JSON对象')
+            job.status, job.output = 'succeeded', data
+            return data
+        except Exception as exc:
+            # 不记录可能携带API凭据/URL查询参数的异常正文。
+            job.status = 'failed'
+            job.error = type(exc).__name__ + ': AI请求失败或返回结构无效'
+            errors.append(job.error)
+        finally:
+            job.duration_ms = int((time.monotonic() - start) * 1000)
+            if 'ai_audit' in db.info:
+                db.info['ai_audit'].append({name: getattr(job, name) for name in (
+                    'kind', 'resource_id', 'status', 'provider', 'model', 'demo',
+                    'input_hash', 'output', 'error', 'duration_ms')})
+            db.flush()
+    raise AIUnavailable('; '.join(errors))
 
-def chat(system: str, user: str, json_mode: bool = False) -> str:
-    global _active
-    import time
-    PRIORITY = {"glm": 0, "kimi": 1, "deepseek": 2}
-    ordered = sorted(PROVIDERS,
-                     key=lambda p: (-1 if p["name"] == _active else PRIORITY.get(p["name"], 9)))
-    for p in ordered:
-        for attempt in range(3):
-            print(f"[llm] try {p['name']} #{attempt+1}", flush=True)
-            with _lock:
-                out = _try(p, system, user, json_mode)
-            if out:
-                print(f"[llm] ok {p['name']} len={len(out)}", flush=True)
-                _active = p["name"]
-                return out
-            if attempt < 2:
-                print(f"[llm] {p['name']} backoff 5s", flush=True)
-                time.sleep(5)
-    print("[llm] all fail, return stub", flush=True)
-    return _stub(json_mode)
 
-
-def chat_json(system: str, user: str) -> dict:
-    raw = chat(system, user, json_mode=True)
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        s, e = raw.find("{"), raw.rfind("}")
-        if s >= 0 and e > s:
-            try:
-                return json.loads(raw[s:e + 1])
-            except json.JSONDecodeError:
-                pass
-    return {}
-
-
-def _stub(json_mode: bool) -> str:
-    if json_mode:
-        return json.dumps({
-            "douyin": {"body": "[STUB] 口播脚本占位", "cover_text": "占位", "hashtags": "#弱电", "image_prompt": "仓库实拍", "best_time": "18:00"},
-            "shipinhao": {"body": "[STUB] 视频号占位", "cover_text": "占位", "hashtags": "", "image_prompt": "", "best_time": "12:00"},
-            "gzh": {"body": "[STUB] 公众号占位", "cover_text": "占位", "hashtags": "", "image_prompt": "", "best_time": "17:00"},
-            "moments": {"body": "[STUB] 朋友圈占位", "cover_text": "", "hashtags": "", "image_prompt": "", "best_time": "08:30"},
-        }, ensure_ascii=False)
-    return "[STUB] 所有 LLM 均不可用"
-
-
-def status() -> dict:
-    """返回各 provider 可用性，供前端/健康检查展示。"""
-    return {"active": _active,
-            "providers": [{"name": p["name"], "model": p["model"],
-                           "configured": bool(p["key"])} for p in PROVIDERS]}
+def status():
+    return {'demo': config.DEMO_MODE, 'configured': bool(config.LLM_PROVIDERS),
+            'providers': [{'name': p.get('name', ''), 'model': p.get('model', '')}
+                          for p in config.LLM_PROVIDERS]}

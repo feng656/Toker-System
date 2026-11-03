@@ -20,8 +20,8 @@ _TEXT_MAIN = (255, 255, 255)
 _TEXT_SUB = (200, 220, 245)
 _LINE_CH = {"project": (255, 210, 80), "channel": (110, 220, 140), "both": (110, 200, 255)}
 
-POSTER_DIR = Path("/workspace/personal-313-53/tuoke/video_out")
-POSTER_DIR.mkdir(parents=True, exist_ok=True)
+from .config import VIDEO_OUTPUT_DIR
+POSTER_DIR = VIDEO_OUTPUT_DIR
 
 
 def _find_font(size: int, bold: bool = True):
@@ -143,6 +143,7 @@ def make_poster(title: str, body_text: str, biz_line: str = "channel",
            font=f_foot_s, fill=_TEXT_SUB)
 
     out_path = out_path or POSTER_DIR / f"poster_{abs(hash(title)) % 10**10}.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_path, "PNG", optimize=True)
     return out_path
 
@@ -154,6 +155,7 @@ def make_video(poster_path: Path, out_path: Optional[Path] = None,
     1080×1920 静态图 + zoompan 平滑推近，输出 H.264 mp4。
     """
     out_path = out_path or POSTER_DIR / (poster_path.stem + ".mp4")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     vf = (
         # zoompan：从 1.0x 慢推到 1.05x，让画面有轻微动感
         f"zoompan=z='min(zoom+0.0008,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"

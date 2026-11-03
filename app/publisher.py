@@ -8,6 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import ContentVariant, PlatformAccount
+from . import config
+from .generator import apply_compliance, ensure_current, record_publication
+from .schemas import valid_publish_url
+from fastapi import HTTPException
 
 
 # ---------- 公众号 ----------
@@ -55,8 +59,8 @@ def publish_gzh(db: Session, v: ContentVariant) -> dict:
         f"https://api.weixin.qq.com/cgi-bin/freepublish/submit?access_token={token}",
         json={"media_id": media_id}, timeout=20).json()
     if pub.get("errcode", 0) == 0:
-        return {"ok": True, "publish_id": pub.get("publish_id"),
-                "url": f"gzh:media_id={media_id}"}
+        return {"ok": True, "submitted": True, "publish_id": pub.get("publish_id"),
+                "media_id": media_id, "note": "异步提交成功，须回填最终公开链接后才计发布量"}
     return {"ok": False, "err": f"发布失败: {pub}"}
 
 
@@ -100,7 +104,8 @@ def publish_douyin(db: Session, v: ContentVariant) -> dict:
                    data={"open_id": open_id, "text": v.body[:2200]},
                    timeout=20).json()
     if (r.get("data") or {}).get("error_code") == 0:
-        return {"ok": True, "url": f"douyin:item={r['data'].get('item_id','')}"}
+        return {"ok": True, "submitted": True, "item_id": r['data'].get('item_id', ''),
+                "note": "已提交，须回填最终公开链接"}
     return {"ok": False, "err": str(r)[:300]}
 
 
@@ -110,18 +115,33 @@ PUBLISHERS = {"gzh": publish_gzh, "douyin": publish_douyin}
 
 
 def publish_variant(db: Session, v: ContentVariant) -> dict:
+    ensure_current(v)
+    if v.confirm_status != 'confirmed' or v.status == 'published':
+        raise HTTPException(409, '仅可提交已审核、未发布版本')
+    if not apply_compliance(db, v):
+        db.commit()
+        raise HTTPException(409, '合规校验未通过')
     fn = PUBLISHERS.get(v.platform)
-    if not fn:
-        return {"ok": False, "err": f"{v.platform} 暂无自动发布通道（请人工复制发布）"}
-    v.publish_status = "publishing"
+    v.publish_status, v.publish_error = 'publishing', ''
     db.commit()
-    r = fn(db, v)
-    if r["ok"]:
-        v.publish_status = "published"
-        v.published_url = r.get("url", "")
-        v.published_at = datetime.now()
-    else:
-        v.publish_status = "failed"
-        v.publish_error = r["err"][:500]
+    try:
+        if not config.OFFICIAL_PUBLISH_ENABLED:
+            raise ValueError('官方发布适配默认关闭，请人工发布并回填链接')
+        if not fn:
+            raise ValueError('该平台尚无官方发布适配')
+        r = fn(db, v)
+        if not r.get('ok'):
+            raise ValueError('官方接口提交失败，请检查平台凭据、权限和素材')
+        v.publish_result = r
+        url = r.get('url', '')
+        if url:
+            record_publication(db, v, valid_publish_url(url))
+        else:
+            v.publish_status = 'submitted'
+    except Exception as exc:
+        v.publish_status = 'failed'
+        v.publish_error = str(exc)[:500] if isinstance(exc, ValueError) else type(exc).__name__ + ': 官方发布失败'
+        r = {'ok': False, 'err': v.publish_error, 'retryable': True}
+        v.publish_result = r
     db.commit()
     return r

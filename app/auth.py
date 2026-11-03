@@ -14,12 +14,16 @@ bearer = HTTPBearer(auto_error=False)
 
 
 def hash_password(p: str) -> str:
-    return bcrypt.hashpw(p.encode()[:72], bcrypt.gensalt()).decode()
+    if len(p.encode()) > 72:
+        raise ValueError('密码UTF-8长度不能超过72字节')
+    return bcrypt.hashpw(p.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(p: str, h: str) -> bool:
     try:
-        return bcrypt.checkpw(p.encode()[:72], h.encode())
+        if len(p.encode()) > 72:
+            return False
+        return bcrypt.checkpw(p.encode(), h.encode())
     except ValueError:
         return False
 
@@ -27,7 +31,7 @@ def verify_password(p: str, h: str) -> bool:
 def make_token(user: User) -> str:
     exp = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
     return jwt.encode(
-        {"sub": str(user.id), "role": user.role, "exp": exp},
+        {"sub": str(user.id), "role": user.role, "tv": user.token_version, "exp": exp},
         JWT_SECRET, algorithm="HS256",
     )
 
@@ -44,8 +48,8 @@ def current_user(
     except (JWTError, KeyError, ValueError):
         raise HTTPException(401, "登录已失效")
     user = db.get(User, uid)
-    if user is None:
-        raise HTTPException(401, "用户不存在")
+    if user is None or user.deleted_at or not user.enabled or payload.get('tv') != user.token_version:
+        raise HTTPException(401, "用户已停用或登录已失效")
     return user
 
 
