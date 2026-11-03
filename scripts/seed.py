@@ -1,51 +1,53 @@
-"""种子数据：合规红线 + 首批选题池。"""
-import sys
-from pathlib import Path
+"""幂等初始化。生产管理员密码由环境提供；演示账号只在显式demo模式创建。"""
+import os
+from sqlalchemy import select
+from app import config
+from app.auth import hash_password
+from app.db import SessionLocal
+from app.models import ComplianceRule, Material, Topic, User
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+RULES = [('forbidden', '底价', '保护渠道价盘'), ('forbidden', '成本价', '保护渠道价盘'),
+         ('forbidden', '出厂价', '保护渠道价盘'), ('ad_law', '全国第一', '禁止绝对化表述'),
+         ('ad_law', '最便宜', '禁止绝对化表述'), ('required', '私信询价', '统一行动引导')]
+TOPICS = [('project', '方案科普', '报告厅LED大屏选型的关键问题', '按使用场景核对参数和交付'),
+          ('channel', '工程商痛点', '地州项目现货与技术团队协同', '帮助工程商完成交付，不抢甲方客户')]
+MATERIALS = [('公司简介', 'both', '自由光业务简介', '弱电智能化与音视频行业产品和技术服务。'),
+             ('服务能力', 'project', '甲方线服务口径', '根据项目场景提供选型、交付与技术支持。'),
+             ('服务能力', 'channel', '渠道合作口径', '面向工程商提供现货协同与技术支持，不抢甲方客户。')]
+DEMO_PASSWORD = 'Demo-Toker-2026!'
 
-from app.db import SessionLocal  # noqa: E402
-from app.models import ComplianceRule, Topic  # noqa: E402
 
-RULES = [
-    ("forbidden", "底价", "渠道价盘保护：禁止出现底价"),
-    ("forbidden", "成本价", "渠道价盘保护"),
-    ("forbidden", "出厂价", "渠道价盘保护"),
-    ("ad_law", "最便宜", "广告法极限词"),
-    ("ad_law", "全国第一", "广告法极限词"),
-    ("ad_law", "100%", "广告法极限词"),
-    ("ad_law", "最低价", "广告法极限词"),
-    ("required", "私信询价", "报价统一口径：引导私信询价"),
-]
-
-TOPICS = [
-    # 甲方线 project
-    ("project", "方案科普", "报告厅LED大屏怎么选：点间距P1.5和P2.0到底差在哪", "以一所学校报告厅改造为场景讲选型逻辑"),
-    ("project", "方案科普", "会议室配会议平板还是投影？一张对比表说清", "突出会议平板无线投屏/书写/远程会议优势"),
-    ("project", "案例复盘", "一所学校报告厅160万信息化项目是怎么交付的", "用已交付案例讲需求-方案-交付全过程(脱敏)"),
-    ("project", "招投标知识", "政企采购LED大屏，招标文件里这5个参数最关键", "帮甲方看懂参数避免踩坑，软性带出京东方总代"),
-    ("project", "公司动态", "2000万现货库存是什么概念？带你看我们的仓库", "实力展示，现货=交付速度"),
-    # 渠道线 channel
-    ("channel", "工程商痛点", "项目急要LED屏现货，厂家排产要45天怎么办", "引出我们2000万现货库存+全省地州配送"),
-    ("channel", "工程商痛点", "投标差一个资质，项目眼看要丢", "资质赋能服务介绍，引导私信"),
-    ("channel", "工程商痛点", "地州有项目没人施工？带证技术团队可输出", "劳务派遣/技术服务中心卖点"),
-    ("channel", "行业观点", "我们不面对甲方——和工程商说清楚这句话的分量", "渠道信任建设，差异化定位"),
-    ("channel", "新品到货", "京东方COB新货到仓，地州工程商可预约看样", "总代身份+看样邀约，评论区引导私信"),
-]
+def seed(db, demo=False):
+    if not db.scalar(select(User).where(User.username == 'admin')):
+        password = DEMO_PASSWORD if demo else os.getenv('BOOTSTRAP_ADMIN_PASSWORD', '')
+        if len(password) < 10:
+            raise RuntimeError('请设置至少10位BOOTSTRAP_ADMIN_PASSWORD；不自动创建弱默认密码')
+        db.add(User(username='admin', name='管理员', role='admin', password_hash=hash_password(password)))
+    if demo:
+        for username, name, role in [('yunying', '演示运营', 'operator'), ('sales01', '演示销售一', 'sales'), ('sales02', '演示销售二', 'sales')]:
+            if not db.scalar(select(User).where(User.username == username)):
+                db.add(User(username=username, name=name, role=role, password_hash=hash_password(DEMO_PASSWORD)))
+    for kind, pattern, note in RULES:
+        if not db.scalar(select(ComplianceRule).where(ComplianceRule.rule_type == kind, ComplianceRule.pattern == pattern)):
+            db.add(ComplianceRule(rule_type=kind, pattern=pattern, note=note))
+    for line, theme, title, angle in TOPICS:
+        if not db.scalar(select(Topic).where(Topic.title == title, Topic.biz_line == line)):
+            db.add(Topic(biz_line=line, theme=theme, title=title, angle=angle))
+    if demo:
+        for category, line, title, content in MATERIALS:
+            if not db.scalar(select(Material).where(Material.title == title)):
+                db.add(Material(category=category, biz_line=line, title=title, content=content, publicity='public'))
+    db.commit()
 
 
 def main():
-    db = SessionLocal()
-    if db.query(ComplianceRule).count() == 0:
-        for t, p, note in RULES:
-            db.add(ComplianceRule(rule_type=t, pattern=p, note=note))
-    if db.query(Topic).count() == 0:
-        for line, theme, title, angle in TOPICS:
-            db.add(Topic(biz_line=line, theme=theme, title=title, angle=angle))
-    db.commit()
-    print(f"rules={db.query(ComplianceRule).count()} topics={db.query(Topic).count()}")
-    db.close()
+    config.validate()
+    with SessionLocal() as db:
+        seed(db, config.DEMO_MODE)
+    print('初始化成功；重复执行不会重复创建账号、规则、选题或演示素材。')
+    if config.DEMO_MODE:
+        print('仅演示：账号admin/yunying/sales01/sales02，密码见docs/DEPLOYMENT.md。')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

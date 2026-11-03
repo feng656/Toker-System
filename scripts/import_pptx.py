@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pptx import Presentation  # noqa: E402
 
+from sqlalchemy import select
 from app.db import SessionLocal  # noqa: E402
 from app.models import Material  # noqa: E402
 
@@ -58,9 +59,12 @@ def main():
                 continue
             cat, pub = guess_category(idx, text)
             title = text.splitlines()[0][:80]
+            source_tag = f"pptx:{Path(path).stem}:p{idx}"
+            if db.scalar(select(Material).where(Material.tags == source_tag)):
+                continue
             db.add(Material(category=cat, biz_line=biz, title=title,
-                            content=text, publicity=pub,
-                            tags=f"pptx:{Path(path).stem}:p{idx}"))
+                            content=text, publicity=pub, tags=source_tag))
+            db.flush()
             n += 1
     db.commit()
     print(f"导入 {n} 条素材")

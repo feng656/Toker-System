@@ -1,0 +1,50 @@
+# 数据库和对象存储使用外部托管实例；此文件不在沙箱启动数据库容器。
+services:
+  migrate:
+    build: .
+    image: toker-backend:local
+    env_file: .env
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    healthcheck:
+      disable: true
+  api:
+    image: toker-backend:local
+    build: .
+    env_file: .env
+    environment:
+      SCHEDULER_ENABLED: "false"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8300:8300"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+  worker:
+    image: toker-backend:local
+    build: .
+    env_file: .env
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      disable: true
+  seed:
+    image: toker-backend:local
+    env_file: .env
+    command: ["python", "-m", "scripts.seed"]
+    profiles: ["tools"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    healthcheck:
+      disable: true
