@@ -1,74 +1,35 @@
 /**
  * 业务口径与格式化工具。
- * 这里的枚举值必须与《奇迹于你和浆果的分工》第 8.1 节状态定义、以及后端
- * app/models.py 的字段取值保持一致；前端不自行推断后端状态。
+ *
+ * 状态与平台字典的唯一来源是 core/status.js；本文件只做兼容再导出与格式化，
+ * 页面应从 status.js 或本文件引用，不得另写一份中文映射。
  */
+import {
+  PLATFORM_META, DEFAULT_PLATFORMS, LEGACY_PLATFORMS, PLATFORM_LABEL, PLATFORM_HOME,
+  CONTENT_STATUS, VARIANT_STATUS, CONFIRM_STATUS, PUBLISH_STATUS,
+  LEAD_STATUS, INTENT, IDENTITY, PUBLICITY, TOPIC_STATUS, ROLE,
+  label, platformName, contentStatusName, variantStatusName, confirmStatusName,
+  publishStatusName, leadStatusName, intentName, identityName, publicityName,
+  topicStatusName, roleName,
+} from './status.js';
 
-export const PLATFORMS = ['douyin', 'shipinhao', 'gzh', 'xhs', 'moments'];
-
-export const PLATFORM_LABEL = {
-  douyin: '抖音', shipinhao: '视频号', gzh: '公众号', xhs: '小红书', moments: '朋友圈',
+export {
+  PLATFORM_META, PLATFORM_LABEL, PLATFORM_HOME,
+  CONTENT_STATUS, VARIANT_STATUS, CONFIRM_STATUS, PUBLISH_STATUS,
+  LEAD_STATUS, INTENT, IDENTITY, PUBLICITY, TOPIC_STATUS, ROLE, LEGACY_PLATFORMS,
+  platformName, contentStatusName, variantStatusName, confirmStatusName,
+  publishStatusName, leadStatusName, intentName, identityName, publicityName,
+  topicStatusName, roleName,
 };
 
-export const PLATFORM_HOME = {
-  douyin: 'https://creator.douyin.com',
-  shipinhao: 'https://channels.weixin.qq.com',
-  gzh: 'https://mp.weixin.qq.com',
-  xhs: 'https://creator.xiaohongshu.com',
-  moments: '',
-};
+/** 默认四平台（抖音 / 小红书 / 公众号 / 闲鱼） */
+export const PLATFORMS = DEFAULT_PLATFORMS;
 
 export const BIZ_LINES = [
   { value: 'project', label: '甲方线' },
   { value: 'channel', label: '渠道线' },
   { value: 'both', label: '通用' },
 ];
-
-/** 内容状态（contents.status） */
-export const CONTENT_STATUS = {
-  draft: '待审核', approved: '已通过', rejected: '已驳回', published: '已发布', archived: '已归档',
-};
-
-/** 变体人工确认状态（content_variants.confirm_status） */
-export const CONFIRM_STATUS = {
-  none: '未提交确认', pending: '待人工确认', confirmed: '已确认', rejected: '已驳回',
-};
-
-/** 变体发布状态（content_variants.publish_status） */
-export const PUBLISH_STATUS = {
-  none: '未发布', queued: '排队中', publishing: '发布中', published: '已发布', failed: '发布失败',
-};
-
-/** 线索状态（leads.status） */
-export const LEAD_STATUS = {
-  new: '新线索', contacted: '已联系', wechat_added: '已加微',
-  opportunity: '商机', won: '已成交', lost: '已流失',
-};
-
-/** 线索意向（leads.intent） */
-export const INTENT = {
-  high: '高意向', mid: '中意向', low: '低意向', junk: '垃圾/广告',
-};
-
-/** 线索身份（leads.identity） */
-export const IDENTITY = {
-  contractor: '工程商', owner: '甲方', unknown: '未知',
-};
-
-/** 素材公开级别（materials.publicity） */
-export const PUBLICITY = {
-  public: '可公开', masked: '需脱敏', internal: '仅内部',
-};
-
-/** 选题状态（topics.status） */
-export const TOPIC_STATUS = {
-  active: '可用', used: '已使用', archived: '已归档',
-};
-
-/** 角色（users.role） */
-export const ROLE = {
-  admin: '管理员', operator: '运营', sales: '销售',
-};
 
 /** 素材分类（materials.category） */
 export const MATERIAL_CATEGORIES = [
@@ -81,17 +42,6 @@ export const TOPIC_THEMES = [
   '方案科普', '案例复盘', '工程商痛点', '新品到货', '招投标知识', '公司动态', '行业观点',
 ];
 
-export const label = (map, key) => (map && map[key] !== undefined ? map[key] : key || '-');
-export const platformName = (p) => label(PLATFORM_LABEL, p);
-export const contentStatusName = (s) => label(CONTENT_STATUS, s);
-export const confirmStatusName = (s) => label(CONFIRM_STATUS, s);
-export const publishStatusName = (s) => label(PUBLISH_STATUS, s);
-export const leadStatusName = (s) => label(LEAD_STATUS, s);
-export const intentName = (i) => label(INTENT, i);
-export const identityName = (i) => label(IDENTITY, i);
-export const publicityName = (p) => label(PUBLICITY, p);
-export const topicStatusName = (s) => label(TOPIC_STATUS, s);
-export const roleName = (r) => label(ROLE, r);
 export const bizLineName = (b) => label({ project: '甲方线', channel: '渠道线', both: '通用' }, b);
 
 export function bizLineClass(b) {

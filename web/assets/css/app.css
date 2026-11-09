@@ -12,6 +12,19 @@ body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:
 .login-brand{font-size:20px;font-weight:700;color:#1f2d3d}
 .login-sub{font-size:12px;color:#909399;margin:6px 0 20px}
 .login-foot{margin-top:16px;font-size:12px;color:#909399;line-height:1.7;border-top:1px solid #ebeef5;padding-top:12px}
+.login-switch{margin-top:10px;text-align:center}
+.login-switch .el-button{font-size:12px}
+.challenge-box{background:#fdf6ec;border:1px solid #f5dab1;border-radius:8px;padding:10px 12px;margin-bottom:12px}
+.challenge-title{font-size:13px;font-weight:600;color:#b88230;margin-bottom:6px}
+.challenge-img{display:block;max-width:100%;height:44px;margin-bottom:8px;border-radius:4px;background:#fff}
+.challenge-prompt{font-size:12px;color:#b88230;line-height:1.6;margin-bottom:6px}
+.pw-strength{display:flex;align-items:center;gap:8px;width:100%;margin-top:6px}
+.pw-bar{flex:1;height:6px;border-radius:3px;background:#ebeef5;overflow:hidden}
+.pw-bar i{display:block;height:100%;border-radius:3px;transition:width .2s ease;background:#f56c6c}
+.pw-bar i.pw-1{background:#e6a23c}
+.pw-bar i.pw-2{background:#409eff}
+.pw-bar i.pw-3{background:#67c23a}
+.pw-label{font-size:11px;color:#909399;white-space:nowrap}
 
 /* ---------- 框架 ---------- */
 .topbar{background:#1f2d3d;color:#fff;padding:0 20px;height:56px;display:flex;align-items:center;justify-content:space-between}
@@ -29,6 +42,15 @@ body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:
 .menu-icon{width:18px;text-align:center}
 .menu-badge{margin-left:auto;background:#f56c6c;color:#fff;border-radius:10px;font-size:11px;padding:0 7px;line-height:18px}
 .main{flex:1;padding:18px;overflow:auto;min-width:0}
+.subnav{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:-2px 0 14px;padding:0 2px;flex-wrap:wrap}
+.crumbs{font-size:12px;color:#909399;display:flex;align-items:center;gap:6px}
+.crumb-root{color:#606266}
+.crumb-sep{color:#c0c4cc}
+.crumb-current{color:#303133;font-weight:600}
+.tabs{display:flex;gap:4px;background:#eef1f6;border-radius:6px;padding:3px}
+.tab-btn{border:0;background:transparent;color:#606266;font-size:13px;padding:5px 14px;border-radius:4px;cursor:pointer;line-height:1.4}
+.tab-btn:hover{color:#409eff}
+.tab-btn.on{background:#fff;color:#409eff;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.08)}
 
 /* ---------- 通用页面元素 ---------- */
 .page-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px;flex-wrap:wrap}
@@ -51,7 +73,7 @@ body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:
 
 /* ---------- 平台 / 业务线 / 状态标签 ---------- */
 .pf{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;color:#fff;margin-right:6px}
-.pf-douyin{background:#000}.pf-shipinhao{background:#07c160}.pf-gzh{background:#1aad19}.pf-xhs{background:#ff2442}.pf-moments{background:#576b95}
+.pf-douyin{background:#000}.pf-shipinhao{background:#07c160}.pf-gzh{background:#1aad19}.pf-xhs{background:#ff2442}.pf-moments{background:#576b95}.pf-xianyu{background:#ffce00;color:#333}
 .line-tag{font-size:12px;padding:1px 6px;border-radius:3px}
 .line-project{background:#e8f4ff;color:#1d7dcf}.line-channel{background:#fef0e6;color:#e6792f}.line-both{background:#f0f2f5;color:#606266}
 .intent-high{color:#f56c6c;font-weight:bold}.intent-mid{color:#e6a23c}.intent-low{color:#909399}.intent-junk{color:#c0c4cc}
@@ -129,14 +151,57 @@ body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:
 .wk-media-none{font-size:12px;color:#e6a23c;margin:6px 0}
 .wk-actions{gap:8px}
 
+/* ---------- 内容管理 R4：待办卡 / 筛选 / 批量 / 版本对比 ---------- */
+.todo-cards{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px}
+.todo-card{background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,.06);cursor:pointer;
+  border:1px solid transparent;transition:border-color .15s ease,box-shadow .15s ease}
+.todo-card:hover{border-color:#b9d9ff;box-shadow:0 2px 10px rgba(64,158,255,.12)}
+.todo-card.on{border-color:#409eff;background:#f3f9ff}
+.todo-card.static{cursor:default}
+.todo-card.static:hover{border-color:transparent;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.todo-card .n{font-size:24px;font-weight:700;color:#303133;line-height:1.2}
+.todo-card .l{font-size:13px;color:#606266;margin-top:2px}
+.todo-card .d{font-size:11px;color:#a8abb2;margin-top:2px}
+.filter-card{padding:12px 14px}
+.batch-bar{position:sticky;top:0;z-index:8;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  background:#ecf5ff;border:1px solid #c6e2ff;border-radius:8px;padding:9px 12px;margin-bottom:12px}
+.batch-count{font-size:13px;font-weight:600;color:#1d7dcf}
+.variant-row{border-top:1px solid #ebeef5;padding-top:10px;margin-top:10px}
+.compat-review{border-top:1px dashed #dcdfe6;padding-top:10px}
+.cmp-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.cmp-timeline{display:flex;gap:8px;overflow-x:auto;padding:4px 0 10px;border-bottom:1px solid #ebeef5;margin-bottom:12px}
+.cmp-rev{display:flex;align-items:center;gap:8px;white-space:nowrap;font-size:12px;color:#606266;
+  border:1px solid #e4e7ed;border-radius:14px;padding:2px 10px;background:#fafafa}
+.cmp-rev.current{border-color:#b3e19d;background:#f0f9eb}
+.cmp-rev.left{border-color:#409eff;background:#ecf5ff}
+.cmp-rev.right{border-color:#e6a23c;background:#fdf6ec}
+.rev-no{font-weight:700;color:#303133}
+.rev-time{color:#909399}
+.rev-current{color:#67c23a;font-weight:600}
+.cmp-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cmp-side{border:1px solid #e4e7ed;border-radius:8px;padding:12px;min-width:0;background:#fff}
+.cmp-head{font-size:13px;font-weight:600;color:#303133;padding-bottom:8px;border-bottom:1px solid #ebeef5;margin-bottom:10px}
+.cmp-block{margin-bottom:10px}
+.cmp-label{font-size:12px;color:#909399;margin-bottom:4px}
+.diff-lines{max-height:44vh;overflow:auto;border:1px solid #f0f2f5;border-radius:6px;padding:4px;background:#fcfcfd}
+.diff-line{white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.7;padding:1px 5px;border-radius:3px;min-height:22px}
+.diff-line.diff-del,.diff-seg.diff-del{background:#fef0f0;color:#c45656}
+.diff-line.diff-add,.diff-seg.diff-add{background:#f0f9eb;color:#529b2e}
+.diff-line.diff-empty{background:#f7f8fa}
+.diff-inline{font-size:13px;line-height:1.9;white-space:pre-wrap;word-break:break-word}
+.diff-seg{border-radius:2px;padding:0 1px}
+.diff-seg.diff-del{text-decoration:line-through}
+
 /* ---------- 响应式 ---------- */
-@media(max-width:1100px){.grid5{grid-template-columns:repeat(3,1fr)}.kanban{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:1100px){.grid5{grid-template-columns:repeat(3,1fr)}.kanban{grid-template-columns:repeat(2,1fr)}.todo-cards{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:860px){
   .menu{width:64px}
   .menu-text{display:none}
   .menu-item{justify-content:center;padding:12px 0}
   .menu-badge{position:absolute;margin:0}
   .grid5,.grid3,.kanban{grid-template-columns:repeat(2,1fr)}
+  .todo-cards{grid-template-columns:repeat(2,1fr)}
+  .cmp-grid{grid-template-columns:1fr}
   .main{padding:12px}
   .wk-wrap{flex-direction:column}
   .wk-channels{width:100%}

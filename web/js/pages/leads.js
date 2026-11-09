@@ -4,12 +4,14 @@
  */
 import { ref, reactive, computed, onMounted } from '../core/vue.js';
 import { leadApi, interactionApi } from '../api/business.js';
+import { topicApi } from '../api/library.js';
 import { authApi } from '../api/auth.js';
 import { notify, errorMessage } from '../core/ui.js';
 import {
   platformName, intentName, identityName, leadStatusName, fmtDateTime, LEAD_STATUS, INTENT, IDENTITY,
+  bizLineName, TOPIC_THEMES,
 } from '../core/format.js';
-import { isAdmin } from '../core/store.js';
+import { isAdmin, canWriteContent } from '../core/store.js';
 
 export default {
   name: 'PageLeads',
@@ -24,11 +26,118 @@ export default {
     const salesUsers = ref([]);
     const detail = ref(null);
     const drawer = ref(false);
+    const interactionDetail = ref(null);
+    const interactionLoading = ref(false);
     const noteDlg = ref(false);
     const noteDraft = ref('');
     const simDlg = ref(false);
     const simForm = reactive({ platform: 'douyin', author_name: '', body: '' });
     const simResult = ref(null);
+
+    /* ---------------- 需求转选题（M-R4-06） ---------------- */
+    const topicDlg = ref(false);
+    const topicSaving = ref(false);
+    const topicSource = ref(null);
+    const topicCreated = ref(null);
+    const topicIndex = ref([]);
+    const topicIndexLoading = ref(false);
+    const topicDupConfirm = ref(false);
+    const topicForm = reactive({ biz_line: 'project', theme: TOPIC_THEMES[0], title: '', angle: '' });
+
+    function sourceMarker(l) {
+      return `来源线索 #${l.id}｜${platformName(l.platform)}${l.visitor_name ? `｜${l.visitor_name}` : ''}`;
+    }
+
+    const convertedTopics = computed(() => {
+      const l = topicSource.value;
+      if (!l) return [];
+      const marker = `来源线索 #${l.id}｜`;
+      return topicIndex.value.filter((t) => (t.angle || '').indexOf(marker) >= 0);
+    });
+
+    const sameTitleTopics = computed(() => {
+      const title = topicForm.title.trim();
+      if (!title) return [];
+      const skip = new Set(convertedTopics.value.map((t) => t.id));
+      return topicIndex.value.filter((t) => t.title.trim() === title && !skip.has(t.id));
+    });
+
+    const topicFinalAngle = computed(() => {
+      const l = topicSource.value;
+      if (!l) return topicForm.angle;
+      const body = topicForm.angle.trim();
+      let block = `—— ${sourceMarker(l)}`;
+      if (l.need_summary) block += `\n原始需求：${l.need_summary}`;
+      if (l.reply_suggestion) block += `\n建议话术：${l.reply_suggestion}`;
+      if (body.indexOf(`来源线索 #${l.id}｜`) >= 0) return body.slice(0, 5000);
+      const room = Math.max(0, 5000 - block.length - 2);
+      const head = body ? `${body.slice(0, room)}\n\n` : '';
+      return (head + block).slice(0, 5000);
+    });
+
+    async function loadTopicIndex() {
+      topicIndexLoading.value = true;
+      try {
+        const [active, used, archived] = await Promise.all([
+          topicApi.list({ status: 'active' }),
+          topicApi.list({ status: 'used' }),
+          topicApi.list({ status: 'archived' }),
+        ]);
+        topicIndex.value = [...(active || []), ...(used || []), ...(archived || [])];
+      } catch (e) {
+        // 查重失败不阻塞转选题，创建时后端仍会校验字段
+        topicIndex.value = [];
+      } finally {
+        topicIndexLoading.value = false;
+      }
+    }
+
+    async function openTopic(l) {
+      topicSource.value = l;
+      topicCreated.value = null;
+      topicDupConfirm.value = false;
+      topicForm.biz_line = 'project';
+      topicForm.theme = TOPIC_THEMES[0];
+      topicForm.title = (l.need_summary || l.brand_need || `${platformName(l.platform)}线索需求`).slice(0, 200);
+      topicForm.angle = l.need_summary
+        ? `围绕「${l.need_summary.slice(0, 60)}」切入，先回应具体需求，再给出可执行建议。`
+        : '';
+      topicDlg.value = true;
+      await Promise.all([loadTopicIndex(), ensureInteraction(l)]);
+    }
+
+    async function saveTopic() {
+      if (!topicSource.value) return;
+      if (!topicForm.theme.trim() || !topicForm.title.trim()) {
+        notify.err('主题与选题标题为必填');
+        return;
+      }
+      if (convertedTopics.value.length && !topicDupConfirm.value) {
+        notify.warn('该线索已生成过选题；如确需换角度新增，请勾选「仍要创建」');
+        return;
+      }
+      topicSaving.value = true;
+      try {
+        const created = await topicApi.create({
+          biz_line: topicForm.biz_line,
+          theme: topicForm.theme.trim(),
+          title: topicForm.title.trim(),
+          angle: topicFinalAngle.value,
+        });
+        topicCreated.value = created || { id: '', title: topicForm.title.trim() };
+        if (created && created.id) topicIndex.value = [created, ...topicIndex.value];
+        notify.ok(`已创建选题${created && created.id ? ` #${created.id}` : ''}，来源已写入角度`);
+      } catch (e) {
+        notify.err(errorMessage(e));
+      } finally {
+        topicSaving.value = false;
+      }
+    }
+
+    function goTopics() {
+      topicDlg.value = false;
+      window.location.hash = '#/contents?tab=topics';
+    }
 
     async function load() {
       loading.value = true;
@@ -85,9 +194,24 @@ export default {
       }
     }
 
-    function openDetail(l) {
+    async function ensureInteraction(l) {
+      interactionDetail.value = null;
+      if (!l || !l.interaction_id) return;
+      interactionLoading.value = true;
+      try {
+        const list = await interactionApi.list({ limit: 500 });
+        interactionDetail.value = (list || []).find((x) => x.id === l.interaction_id) || null;
+      } catch (e) {
+        interactionDetail.value = null;
+      } finally {
+        interactionLoading.value = false;
+      }
+    }
+
+    async function openDetail(l) {
       detail.value = l;
       drawer.value = true;
+      await ensureInteraction(l);
     }
 
     function openNote(l) {
@@ -136,9 +260,13 @@ export default {
     return {
       leads, filtered, loading, error, forbidden, filter, busy, salesUsers,
       detail, drawer, noteDlg, noteDraft, simDlg, simForm, simResult, highCount, unassigned,
+      interactionDetail, interactionLoading,
+      topicDlg, topicSaving, topicSource, topicCreated, topicIndexLoading, topicDupConfirm,
+      topicForm, convertedTopics, sameTitleTopics, topicFinalAngle,
       load, updateLead, openDetail, openNote, saveNote, push, addInteraction,
-      platformName, intentName, identityName, leadStatusName, fmtDateTime,
-      LEAD_STATUS, INTENT, IDENTITY, isAdmin,
+      openTopic, saveTopic, goTopics,
+      platformName, intentName, identityName, leadStatusName, fmtDateTime, bizLineName,
+      LEAD_STATUS, INTENT, IDENTITY, isAdmin, canWriteContent, TOPIC_THEMES,
     };
   },
   template: `
@@ -148,7 +276,7 @@ export default {
     <div class="page-sub">按意向、身份、负责人、状态筛选线索；跟进后务必更新状态并写一条联系记录——没有记录的高意向线索不允许标为「商机」。高意向线索由系统自动推送企微提醒，推送失败可手动重试。</div>
   </div>
   <div class="row">
-    <el-button size="small" @click="simDlg = true">+ 录入评论 / 私信</el-button>
+    <el-button v-if="canWriteContent" size="small" @click="simDlg = true">+ 录入评论 / 私信</el-button>
     <el-button size="small" @click="load" :loading="loading">刷新</el-button>
   </div>
 </div>
@@ -206,12 +334,15 @@ export default {
       <el-select v-if="isAdmin && salesUsers.length" :value="l.assignee" size="small" style="width:140px"
                  placeholder="指派销售" filterable clearable :disabled="busy[l.id]"
                  @change="(v) => updateLead(l, { assignee: v || '' })">
-        <el-option v-for="u in salesUsers" :key="u.id" :label="u.name || u.username" :value="u.name || u.username"></el-option>
+        <el-option v-for="u in salesUsers" :key="u.id"
+                   :label="u.name ? u.name + '（' + u.username + '）' : u.username"
+                   :value="u.username"></el-option>
       </el-select>
-      <el-input v-else :value="l.assignee" size="small" placeholder="指派销售" style="width:120px"
-                :disabled="busy[l.id]" @change="(val) => updateLead(l, { assignee: val })"></el-input>
+      <el-input v-else :value="l.assignee" size="small" :placeholder="canWriteContent ? '指派销售' : '未指派'" style="width:120px"
+                :disabled="busy[l.id] || !canWriteContent" @change="(val) => updateLead(l, { assignee: val })"></el-input>
       <el-button size="small" @click="openNote(l)">联系记录</el-button>
-      <el-button size="small" @click="push(l)" :loading="busy[l.id]">推送企微</el-button>
+      <el-button v-if="canWriteContent" size="small" type="success" plain @click="openTopic(l)">💡 转选题</el-button>
+      <el-button v-if="canWriteContent" size="small" @click="push(l)" :loading="busy[l.id]">推送企微</el-button>
       <el-button size="small" text type="primary" @click="openDetail(l)">详情</el-button>
     </div>
   </div>
@@ -241,8 +372,74 @@ export default {
     <span class="k">跟进记录</span><span>{{ detail.follow_notes || '暂无' }}</span>
     <span class="k">创建时间</span><span>{{ fmtDateTime(detail.created_at) }}</span>
   </div>
-  <div class="gap-note">评论 / 私信原文：后端暂未提供互动查询接口（《接口缺口清单》GAP-06），此处暂缺。</div>
+  <div v-if="interactionLoading" class="gap-note">正在加载评论 / 私信原文…</div>
+  <div v-else-if="interactionDetail" class="mt14">
+    <div class="muted mb10">
+      评论 / 私信原文 · {{ interactionDetail.kind === 'dm' ? '私信' : '评论' }}
+      · {{ fmtDateTime(interactionDetail.created_at) }}
+    </div>
+    <div class="body-pre">{{ interactionDetail.body }}</div>
+  </div>
+  <div v-else class="gap-note">该线索未关联可查询的互动原文。后端 interactions 暂无 permalink 字段，无法回链到平台原帖。</div>
+  <div v-if="detail && canWriteContent" class="row mt14">
+    <el-button type="success" plain @click="openTopic(detail)">💡 用这条需求生成选题</el-button>
+  </div>
 </el-drawer>
+
+<el-dialog v-model="topicDlg" title="线索转选题" width="620px">
+  <div v-if="topicSource" class="alert-strip info">
+    来源：{{ platformName(topicSource.platform) }} · {{ topicSource.visitor_name || '未留昵称' }} · 线索 #{{ topicSource.id }}
+    <div class="mt6">需求：{{ topicSource.need_summary || '（无摘要，请在选题角度中补充）' }}</div>
+    <div v-if="topicSource.contact_info" class="mt6">联系方式：{{ topicSource.contact_info }}</div>
+  </div>
+
+  <el-alert v-if="topicIndexLoading" type="info" :closable="false" title="正在检查选题池重复情况…" class="mb10" />
+  <el-alert v-else-if="convertedTopics.length" type="error" :closable="false" show-icon class="mb10"
+            title="该线索已生成过选题">
+    <template #default>
+      <div v-for="t in convertedTopics" :key="t.id">#{{ t.id }}「{{ t.title }}」· {{ bizLineName(t.biz_line) }}</div>
+      <div class="tiny mt6">默认不再重复创建；确需换一个角度，请勾选下方确认。</div>
+    </template>
+  </el-alert>
+  <el-alert v-else-if="sameTitleTopics.length" type="warning" :closable="false" show-icon class="mb10"
+            :title="'选题池已有同名选题 #' + sameTitleTopics[0].id + '，请确认是否仍要创建'" />
+
+  <el-form label-width="86px">
+    <el-form-item label="业务线">
+      <el-select v-model="topicForm.biz_line">
+        <el-option label="甲方线" value="project"/>
+        <el-option label="渠道线" value="channel"/>
+      </el-select>
+    </el-form-item>
+    <el-form-item label="主题">
+      <el-select v-model="topicForm.theme" filterable allow-create default-first-option>
+        <el-option v-for="t in TOPIC_THEMES" :key="t" :label="t" :value="t"></el-option>
+      </el-select>
+    </el-form-item>
+    <el-form-item label="选题">
+      <el-input v-model="topicForm.title" placeholder="选题标题（必填）" maxlength="200" show-word-limit></el-input>
+    </el-form-item>
+    <el-form-item label="角度">
+      <el-input v-model="topicForm.angle" type="textarea" :rows="3"
+                placeholder="从什么角度写这条内容，避免与历史选题重复"></el-input>
+    </el-form-item>
+    <el-form-item label="来源追溯">
+      <el-input :model-value="topicFinalAngle" type="textarea" :rows="3" readonly></el-input>
+      <div class="gap-note">后端选题表暂无来源字段，来源链接/线索号会写入「角度」末尾，创建后可在选题池按「来源线索 #{{ topicSource && topicSource.id }}」检索追溯。</div>
+    </el-form-item>
+  </el-form>
+
+  <el-checkbox v-if="convertedTopics.length" v-model="topicDupConfirm">已了解重复，仍要创建新选题</el-checkbox>
+  <div v-if="topicCreated" class="alert-strip ok mt10">
+    已创建选题{{ topicCreated.id ? ' #' + topicCreated.id : '' }}「{{ topicCreated.title }}」，来源信息已保留。
+    <el-button size="small" text type="primary" @click="goTopics">去选题池查看</el-button>
+  </div>
+
+  <template #footer>
+    <el-button @click="topicDlg = false">{{ topicCreated ? '关闭' : '取消' }}</el-button>
+    <el-button v-if="!topicCreated" type="primary" :loading="topicSaving" @click="saveTopic">创建选题</el-button>
+  </template>
+</el-dialog>
 
 <el-dialog v-model="simDlg" title="录入评论 / 私信（AI 自动打标）" width="540px">
   <el-form label-width="86px">

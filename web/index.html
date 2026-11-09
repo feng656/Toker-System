@@ -10,22 +10,76 @@
 </head>
 <body>
 <div id="app" v-cloak>
-  <!-- 登录 -->
+  <!-- 登录 / 注册 -->
   <div v-if="!session.token" class="login-wrap">
     <div class="login-card">
       <div class="login-brand">自由光 · 拓客系统</div>
       <div class="login-sub">AI 内容生产 · 多平台分发 · 评论线索挖掘</div>
-      <el-form :model="loginForm" label-position="top" @submit.prevent="doLogin">
-        <el-form-item label="账号">
-          <el-input v-model="loginForm.username" placeholder="请输入账号" autocomplete="username" @keyup.enter="doLogin"></el-input>
-        </el-form-item>
-        <el-form-item label="密码">
-          <el-input v-model="loginForm.password" type="password" show-password placeholder="请输入密码" autocomplete="current-password" @keyup.enter="doLogin"></el-input>
-        </el-form-item>
-        <el-alert v-if="loginError" :title="loginError" type="error" :closable="false" show-icon style="margin-bottom:12px"></el-alert>
-        <el-button type="primary" style="width:100%" :loading="loginLoading" @click="doLogin">登录</el-button>
-      </el-form>
-      <div class="login-foot">登录后按角色进入对应工作台；账号由管理员在「设置与帮助 · 用户管理」中创建。</div>
+
+      <!-- 登录 -->
+      <template v-if="!registerMode">
+        <el-form :model="loginForm" label-position="top" @submit.prevent="doLogin">
+          <el-form-item label="账号">
+            <el-input v-model="loginForm.username" placeholder="请输入账号" autocomplete="username" @keyup.enter="doLogin"></el-input>
+          </el-form-item>
+          <el-form-item label="密码">
+            <el-input v-model="loginForm.password" type="password" show-password placeholder="请输入密码" autocomplete="current-password" @keyup.enter="doLogin"></el-input>
+          </el-form-item>
+
+          <div v-if="challenge" class="challenge-box">
+            <div class="challenge-title">安全验证</div>
+            <img v-if="challenge.image_url" :src="challenge.image_url" alt="安全验证图片" class="challenge-img">
+            <div v-if="challenge.prompt" class="challenge-prompt">{{ challenge.prompt }}</div>
+            <el-input v-model="loginForm.challenge_answer" placeholder="请输入验证码" autocomplete="off" @keyup.enter="doLogin"></el-input>
+          </div>
+
+          <el-alert v-if="loginError" :title="loginError" type="error" :closable="false" show-icon style="margin-bottom:12px"></el-alert>
+          <el-alert v-if="retryLeft > 0" :title="`尝试过于频繁，${retryLeft} 秒后可重试`" type="warning" :closable="false" show-icon style="margin-bottom:12px"></el-alert>
+          <el-button type="primary" style="width:100%" :loading="loginLoading" :disabled="retryLeft > 0" @click="doLogin">登录</el-button>
+        </el-form>
+        <div class="login-switch">
+          <el-button v-if="regConfig.enabled" text type="primary" @click="openRegister">使用邀请码注册</el-button>
+          <span v-else class="login-foot">自主注册未开放，请联系管理员开通。</span>
+        </div>
+        <div class="login-foot">登录后按角色进入对应工作台；账号也可由管理员在「设置 · 用户管理」中创建。</div>
+      </template>
+
+      <!-- 注册（默认关闭；开启时仅邀请码） -->
+      <template v-else>
+        <div class="login-sub">邀请码注册 · 默认角色：{{ roleName(regConfig.default_role) }}</div>
+        <el-alert v-if="!regConfig.enabled" :title="regConfig.reason" type="info" :closable="false" show-icon style="margin-bottom:12px"></el-alert>
+        <template v-else>
+          <el-form :model="regForm" label-position="top" @submit.prevent="doRegister">
+            <el-form-item label="账号">
+              <el-input v-model="regForm.username" placeholder="至少 2 个字符" autocomplete="username"></el-input>
+            </el-form-item>
+            <el-form-item label="姓名（可选）">
+              <el-input v-model="regForm.name" placeholder="用于线索指派展示" autocomplete="name"></el-input>
+            </el-form-item>
+            <el-form-item label="密码">
+              <el-input v-model="regForm.password" type="password" show-password placeholder="至少 8 位，含字母和数字" autocomplete="new-password"></el-input>
+              <div v-if="regForm.password" class="pw-strength">
+                <span class="pw-bar"><i :class="'pw-' + passwordStrength.score" :style="{ width: ((passwordStrength.score + 1) * 25) + '%' }"></i></span>
+                <span class="pw-label">{{ passwordStrength.label }}</span>
+              </div>
+            </el-form-item>
+            <el-form-item label="确认密码">
+              <el-input v-model="regForm.confirm" type="password" show-password placeholder="再次输入密码" autocomplete="new-password"></el-input>
+            </el-form-item>
+            <el-form-item v-if="regConfig.invite_required" label="邀请码">
+              <el-input v-model="regForm.invite_code" placeholder="请向管理员获取邀请码" autocomplete="off"></el-input>
+            </el-form-item>
+            <el-alert v-if="regError" :title="regError" type="error" :closable="false" show-icon style="margin-bottom:12px"></el-alert>
+            <el-alert v-if="regNotice" :title="regNotice" type="success" :closable="false" show-icon style="margin-bottom:12px"></el-alert>
+            <el-alert v-if="regRetryLeft > 0" :title="`尝试过于频繁，${regRetryLeft} 秒后可重试`" type="warning" :closable="false" show-icon style="margin-bottom:12px"></el-alert>
+            <el-button type="primary" style="width:100%" :loading="regLoading" :disabled="!canSubmitRegister" @click="doRegister">注册</el-button>
+          </el-form>
+          <div class="login-foot" v-if="regConfig.approval_required">注册后需管理员审批；审批通过前不能登录。</div>
+        </template>
+        <div class="login-switch">
+          <el-button text @click="backToLogin">返回登录</el-button>
+        </div>
+      </template>
     </div>
   </div>
 
@@ -34,7 +88,7 @@
     <div class="topbar">
       <div class="topbar-left">
         <b>自由光 · 拓客系统</b>
-        <span class="topbar-env">一期 · 半自动获客</span>
+        <span class="topbar-env">二期 · 半自动获客</span>
       </div>
       <div class="topbar-right">
         <el-tooltip content="平台模式与角色说明" placement="bottom">
@@ -46,13 +100,25 @@
     </div>
     <div class="layout">
       <nav class="menu">
-        <div v-for="m in menuItems" :key="m.key" class="menu-item" :class="{on: route===m.key}"
+        <div v-for="m in menuItems" :key="m.key" class="menu-item" :class="{ on: route === m.key }"
              @click="navigate(m.key)">
           <span class="menu-icon">{{ m.icon }}</span><span class="menu-text">{{ m.title }}</span>
           <span v-if="m.badge" class="menu-badge">{{ m.badge }}</span>
         </div>
       </nav>
       <main class="main">
+        <div v-if="currentTabs.length" class="subnav">
+          <div class="crumbs">
+            <span class="crumb-root">{{ currentMenuTitle }}</span>
+            <template v-if="currentTabTitle && currentTabTitle !== currentMenuTitle">
+              <span class="crumb-sep">/</span><span class="crumb-current">{{ currentTabTitle }}</span>
+            </template>
+          </div>
+          <div class="tabs" v-if="currentTabs.length > 1">
+            <button v-for="t in currentTabs" :key="t.key" class="tab-btn" :class="{ on: routeTab === t.key }"
+                    @click="navigate(route, t.key)">{{ t.title }}</button>
+          </div>
+        </div>
         <div v-if="routeError" class="page-state">
           <el-result icon="warning" :title="routeError.title" :sub-title="routeError.sub">
             <template #extra>

@@ -3,7 +3,8 @@
  *
  * 已知后端缺口（见《接口缺口清单.md》）：
  *  - GAP-05 /dashboard/trend、/dashboard/topics 不存在 → 看板趋势由前端从 /contents 明细本地聚合
- *  - GAP-06 无 GET /interactions 列表 → 线索详情看不到评论原文
+ *  - GAP-06 GET /interactions 已有列表，但无 lead_id/permalink 字段 → 详情在前端按
+ *    interaction_id 匹配，且无法回链到平台原帖
  *  - GAP-07 无 GET /metrics 列表 → 指标明细只能按版本回查
  *  - GAP-08 线索 30 天去重未实现 → 前端只做重复提示，不代替后端判定
  */
@@ -16,6 +17,7 @@ export const leadApi = {
 };
 
 export const interactionApi = {
+  list: (query) => http.get('/interactions', query),
   create: (body) => http.post('/interactions', body),
 };
 
