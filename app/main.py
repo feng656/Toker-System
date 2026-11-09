@@ -20,7 +20,7 @@ async def lifespan(app):
     # 严禁 create_all 吞掉迁移问题；空库由独立 migration 命令初始化。
     with engine.connect() as conn:
         revision = conn.execute(text('SELECT version_num FROM alembic_version')).scalar()
-        if revision != '0002_backend_closure':
+        if revision != '0003_phase2':
             raise RuntimeError('数据库迁移未完成，请先执行 alembic upgrade head')
     if config.SCHEDULER_ENABLED:
         from .scheduler import start_scheduler
@@ -31,11 +31,19 @@ async def lifespan(app):
         stop_scheduler()
 
 
-app = FastAPI(title='自由光拓客系统后端', version='1.0.0', lifespan=lifespan,
-              description='一期半自动发布。OCR需人工确认；AI未配置时明确失败；外部推送使用outbox。')
+app = FastAPI(title='自由光拓客系统后端', version='2.0.0', lifespan=lifespan,
+              description='多平台内容与授权工作空间。发布、互动保留人工确认，未配置外部服务时明确失败。')
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS,
                    allow_methods=['GET', 'POST', 'PUT', 'DELETE'], allow_headers=['Authorization', 'Content-Type', 'Idempotency-Key'])
 app.include_router(api, prefix='/api/v1')
+from .phase2_api import api as phase2_api
+app.include_router(phase2_api, prefix='/api/v1')
+app.include_router(phase2_api, prefix='/api', include_in_schema=False)
+from .media_api import api as media_api
+from .automation_api import api as automation_api
+for extra in (media_api, automation_api):
+    app.include_router(extra, prefix='/api/v1')
+    app.include_router(extra, prefix='/api', include_in_schema=False)
 # 原页面仍调用/api：短期只作兼容别名，不复制业务逻辑、不污染OpenAPI。
 app.include_router(api, prefix='/api', include_in_schema=False)
 
@@ -55,6 +63,19 @@ async def integrity_error(request, exc):
 @app.exception_handler(StaleDataError)
 async def stale_error(request, exc):
     return JSONResponse({'detail': '记录已被其他请求修改，请刷新后重试', 'code': 'STALE_VERSION'}, status_code=409)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(request, exc):
+    # Pydantic错误默认含input，登录/服务配置校验不得回显密码、邀请码或密钥。
+    errors = [{k:v for k,v in error.items() if k in ('loc', 'msg', 'type')} for error in exc.errors()]
+    return JSONResponse({'detail': errors, 'code': 'VALIDATION_ERROR'}, status_code=422)
+
+
+from .llm import AIUnavailable
+@app.exception_handler(AIUnavailable)
+async def ai_error(request, exc):
+    return JSONResponse({'detail': 'AI服务失败或响应无效，请检查配置并重试', 'code': 'DEPENDENCY_UNAVAILABLE'}, status_code=503)
 
 
 @app.exception_handler(ValueError)

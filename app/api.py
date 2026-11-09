@@ -1,7 +1,7 @@
 """一期后端接口；规范前缀由 main 注册为 /api/v1。"""
 from datetime import date, timedelta
 from typing import Literal
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 from . import config, storage
@@ -37,6 +37,17 @@ def variant_dict(v):
     return as_dict(v)
 
 
+def lead_list_dict(lead):
+    import re
+    result = as_dict(lead)
+    # 不仅contact_info，摘要/回复/author_key也可能含号码；列表不返回可逆去重键。
+    for key, value in list(result.items()):
+        if isinstance(value, str):
+            result[key] = re.sub(r'(?<!\d)(1[3-9]\d)\d{4}(\d{4})(?!\d)', r'\1****\2', value)
+    result.pop('contact_keys', None)
+    return result
+
+
 def content_dict(c):
     result = as_dict(c)
     result['topic'] = c.topic.title if c.topic else None
@@ -56,12 +67,24 @@ def visible_lead(db, key, user, expected=None):
 
 
 @api.post('/auth/login', tags=['认证'])
-def login(body: LoginIn, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.username == body.username, User.enabled.is_(True)))
-    if not user or not verify_password(body.password, user.password_hash):
-        raise HTTPException(401, '账号或密码错误')
+def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
+    from .login_security import authenticate
+    user = authenticate(db, body, request)
     return {'token': make_token(user), 'token_type': 'bearer',
             'user': as_dict(user, {'password_hash', 'token_version'})}
+
+
+@api.get('/auth/policy', tags=['认证'])
+def auth_policy():
+    return {'auto_register_mode': config.AUTO_REGISTER_MODE, 'minimum_role': 'sales',
+            'challenge': 'proof-of-work', 'ip_limit': config.LOGIN_IP_LIMIT,
+            'account_limit': config.LOGIN_ACCOUNT_LIMIT, 'window_seconds': config.LOGIN_WINDOW_SECONDS}
+
+
+@api.post('/auth/challenge', tags=['认证'])
+def auth_challenge(request: Request, db: Session = Depends(get_db)):
+    from .login_security import address, create_challenge
+    return create_challenge(db, address(request))
 
 
 @api.get('/auth/me', tags=['认证'])
@@ -279,20 +302,31 @@ def ai_jobs(kind: str | None = None, status: str | None = None, limit: int = Que
 
 
 @api.get('/llm/status', tags=['AI审计'])
-def llm_status(_=Depends(operate)):
+def llm_status(db: Session = Depends(get_db), _=Depends(operate)):
     from .llm import status
-    return status()
+    from .ai_providers import text_providers
+    result = status()
+    providers = text_providers(db)
+    result.update(configured=bool(providers), providers=[{'name':p['name'], 'model':p['model']} for p in providers])
+    return result
 
 
 @api.get('/contents', tags=['内容'])
-def contents(status: str | None = None, scheduled: date | None = None,
-             limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db), _=Depends(operate)):
+def contents(status: str | None = None, scheduled: date | None = None, platform_id: int | None = None,
+             scheduled_from: date | None = None, scheduled_to: date | None = None,
+             offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db), _=Depends(operate)):
     q = select(Content).options(selectinload(Content.variants), selectinload(Content.topic)).order_by(Content.id.desc())
     if status:
         q = q.where(Content.status == status)
     if scheduled:
         q = q.where(Content.scheduled_date == scheduled)
-    return [content_dict(c) for c in db.scalars(q.limit(limit)).all()]
+    if scheduled_from:
+        q = q.where(Content.scheduled_date >= scheduled_from)
+    if scheduled_to:
+        q = q.where(Content.scheduled_date <= scheduled_to)
+    if platform_id:
+        q = q.where(Content.id.in_(select(ContentVariant.content_id).where(ContentVariant.platform_id == platform_id, ContentVariant.is_current.is_(True))))
+    return [content_dict(c) for c in db.scalars(q.limit(limit).offset(offset)).all()]
 
 
 @api.get('/contents/{cid}', tags=['内容'])
@@ -455,10 +489,11 @@ async def browser_publish(platform: str, body: BrowserPublishIn, db: Session = D
 @api.get('/accounts/status', tags=['设置'])
 def accounts_status(db: Session = Depends(get_db), _=Depends(operate)):
     rows = {a.platform: a for a in db.scalars(select(PlatformAccount)).all()}
-    return [{'platform': p, 'configured': bool(rows.get(p) and rows[p].appid),
-             'auto': bool(config.OFFICIAL_PUBLISH_ENABLED and rows.get(p) and rows[p].enabled),
+    from .models import Platform
+    return [{'platform': p.code, 'platform_id': p.id, 'configured': bool(rows.get(p.code) and rows[p.code].appid),
+             'auto': bool(config.OFFICIAL_PUBLISH_ENABLED and rows.get(p.code) and rows[p.code].enabled),
              'mode': 'experimental' if config.OFFICIAL_PUBLISH_ENABLED else 'manual'}
-            for p in ('douyin', 'shipinhao', 'gzh', 'moments', 'xhs')]
+            for p in db.scalars(select(Platform).order_by(Platform.id)).all()]
 
 
 @api.get('/accounts', tags=['设置'])
@@ -468,10 +503,13 @@ def accounts(db: Session = Depends(get_db), _=Depends(admin)):
 
 @api.post('/accounts', tags=['设置'])
 def set_account(body: AccountIn, db: Session = Depends(get_db), _=Depends(admin)):
+    from .platforms import resolve
+    pf = resolve(db, body.platform)
     obj = db.scalar(select(PlatformAccount).where(PlatformAccount.platform == body.platform))
     if not obj:
         obj = PlatformAccount(platform=body.platform)
         db.add(obj)
+    obj.platform_id = pf.id
     for k, value in body.model_dump().items():
         if k == 'appsecret' and not value:
             continue
@@ -573,15 +611,19 @@ def interactions(platform: str | None = None, variant_id: int | None = None, sta
 def add_interaction(body: InteractionIn, db: Session = Depends(get_db), _=Depends(operate)):
     from .classifier import classify_interaction
     from .tasks import lock
+    from .platforms import resolve
+    platform = resolve(db, body.platform)
     if body.variant_id:
-        row(db, ContentVariant, body.variant_id)
+        v = row(db, ContentVariant, body.variant_id)
+        if v.platform != platform.code:
+            raise HTTPException(422, '互动平台与内容平台不一致')
     if body.source_key:
         lock(db, f'interaction:{body.source_key}')
         old = db.scalar(select(Interaction).where(Interaction.source_key == body.source_key))
         if old:
             src = db.scalar(select(LeadSource).where(LeadSource.interaction_id == old.id))
             return {'interaction_id': old.id, 'lead': as_dict(db.get(Lead, src.lead_id)) if src else None, 'idempotent': True}
-    it = Interaction(**body.model_dump(exclude={'auto_classify'}))
+    it = Interaction(**body.model_dump(exclude={'auto_classify'}), platform_id=platform.id)
     db.add(it)
     db.flush()
     lead = classify_interaction(db, it) if body.auto_classify else None
@@ -609,7 +651,7 @@ def leads(status: str | None = None, intent: str | None = None, assignee: str | 
         q = q.where(Lead.intent == intent)
     if assignee:
         q = q.where(Lead.assignee == assignee)
-    return [as_dict(x) for x in db.scalars(q.limit(limit)).all()]
+    return [lead_list_dict(x) for x in db.scalars(q.limit(limit)).all()]
 
 
 @api.get('/leads/{lid}', tags=['互动线索'])

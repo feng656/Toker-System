@@ -36,6 +36,20 @@ BROWSER_ENABLED = os.getenv('BROWSER_ENABLED', 'false').lower() == 'true'
 BROWSER_ADAPTER_URL = os.getenv('BROWSER_ADAPTER_URL', '')
 BROWSER_ADAPTER_TOKEN = os.getenv('BROWSER_ADAPTER_TOKEN', '')
 OFFICIAL_PUBLISH_ENABLED = os.getenv('OFFICIAL_PUBLISH_ENABLED', 'false').lower() == 'true'
+AUTO_REGISTER_MODE = os.getenv('AUTO_REGISTER_MODE', 'off')
+REGISTER_INVITE_CODE = os.getenv('REGISTER_INVITE_CODE', '')
+LOGIN_WINDOW_SECONDS = int(os.getenv('LOGIN_WINDOW_SECONDS', '60'))
+LOGIN_IP_LIMIT = int(os.getenv('LOGIN_IP_LIMIT', '30'))
+LOGIN_ACCOUNT_LIMIT = int(os.getenv('LOGIN_ACCOUNT_LIMIT', '10'))
+LOGIN_CHALLENGE_AFTER = int(os.getenv('LOGIN_CHALLENGE_AFTER', '3'))
+LOGIN_MAX_INFLIGHT = int(os.getenv('LOGIN_MAX_INFLIGHT', '4'))
+SESSION_ENCRYPTION_KEY = os.getenv('SESSION_ENCRYPTION_KEY', '')
+ADAPTER_ALLOWED_HOSTS = [x.strip().lower() for x in os.getenv('ADAPTER_ALLOWED_HOSTS', '').split(',') if x.strip()]
+MEDIA_ALLOWED_HOSTS = [x.strip().lower() for x in os.getenv('MEDIA_ALLOWED_HOSTS', '').split(',') if x.strip()]
+PHASE2_WORKER_ENABLED = os.getenv('PHASE2_WORKER_ENABLED', 'false').lower() == 'true'
+AUTOMATION_ENABLED = os.getenv('AUTOMATION_ENABLED', 'false').lower() == 'true'
+AUTOMATION_INTERVAL_SECONDS = int(os.getenv('AUTOMATION_INTERVAL_SECONDS', '60'))
+AUTOMATION_DAILY_LIMIT = int(os.getenv('AUTOMATION_DAILY_LIMIT', '50'))
 
 
 def path_setting(name, default):
@@ -57,3 +71,7 @@ def validate():
         raise RuntimeError('JWT_SECRET 至少 32 字符，请使用随机值')
     if DEMO_MODE and APP_ENV == 'production':
         raise RuntimeError('生产环境禁止 DEMO_MODE')
+    if AUTO_REGISTER_MODE not in ('off', 'invite'):
+        raise RuntimeError('自动注册仅允许off或invite；不能开放无邀请注册')
+    if AUTO_REGISTER_MODE == 'invite' and len(REGISTER_INVITE_CODE) < 16:
+        raise RuntimeError('邀请码模式必须配置至少16字符随机邀请码')
