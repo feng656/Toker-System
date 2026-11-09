@@ -25,13 +25,24 @@ def db_reset(monkeypatch):
     monkeypatch.setattr(config, 'CRM_WEBHOOK', '')
     monkeypatch.setattr(config, 'WECOM_WEBHOOK', '')
     monkeypatch.setattr(config, 'OFFICIAL_PUBLISH_ENABLED', False)
+    monkeypatch.setattr(config, 'AUTO_REGISTER_MODE', 'off')
+    monkeypatch.setattr(config, 'LOGIN_IP_LIMIT', 1000)
+    monkeypatch.setattr(config, 'LOGIN_ACCOUNT_LIMIT', 1000)
     if engine.dialect.name == 'postgresql' and os.getenv('ALLOW_TEST_DATABASE_RESET') != 'yes':
         raise RuntimeError('真库测试须设置ALLOW_TEST_DATABASE_RESET=yes并使用独立测试schema')
     cfg = Config(str(Path(__file__).resolve().parents[1] / 'alembic.ini'))
-    with engine.begin() as conn:
-        cfg.attributes['connection'] = conn
-        command.downgrade(cfg, 'base') if conn.dialect.has_table(conn, 'alembic_version') else None
-        command.upgrade(cfg, 'head')
+    with engine.connect() as conn:
+        if conn.dialect.name == 'sqlite':
+            # SQLite batch重建被引用表时必须临时关闭FK；测试重置结束立即恢复并检查。
+            conn.exec_driver_sql('PRAGMA foreign_keys=OFF');conn.commit()
+        with conn.begin():
+            cfg.attributes['connection'] = conn
+            command.downgrade(cfg, 'base') if conn.dialect.has_table(conn, 'alembic_version') else None
+            command.upgrade(cfg, 'head')
+        if conn.dialect.name == 'sqlite':
+            conn.exec_driver_sql('PRAGMA foreign_keys=ON')
+            assert not conn.exec_driver_sql('PRAGMA foreign_key_check').all()
+            conn.commit()
     with SessionLocal() as db:
         seed(db, demo=True)
     yield

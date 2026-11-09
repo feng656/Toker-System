@@ -1,5 +1,7 @@
 # 自由光 · 拓客系统 MVP
 
+> **二期后端联调版**：动态平台、批量审核、素材/视频任务、工作空间、授权互动和登录安全已增量实现。先看[二期升级指南](docs/PHASE2_DEPLOYMENT.md)、[接口契约](docs/PHASE2_API_CONTRACT.md)、[适配协议](docs/PHASE2_ADAPTERS.md)和[73项测试报告](docs/PHASE2_TEST_REPORT.md)。真实平台服务与账号、AI key、Gitee授权仍待联调，不宣称已可生产上线。
+
 > 后端协作分支已补齐迁移、权限、审核、OCR确认与推送队列。**当前启动方式、账号及外部依赖以 [后端部署说明](docs/DEPLOYMENT.md) 为准**；以下为原始MVP说明，原弱默认密码和stub行为已停用。前端页面原样保留，新增交互由前端负责人按 [接口约定](docs/API_CONTRACT.md) 联调。
 
 AI 内容工厂 + 半自动发布 + 评论线索挖掘。
@@ -9,7 +11,7 @@ AI 内容工厂 + 半自动发布 + 评论线索挖掘。
 ```bash
 cd tuoke
 .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8300
-# 打开 http://localhost:8300  登录: admin / admin123
+# 初始化与登录凭据按 docs/DEPLOYMENT.md 配置；禁止使用历史弱默认密码
 ```
 
 ## 初始化
