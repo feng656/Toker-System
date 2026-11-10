@@ -56,6 +56,11 @@ def job_pending():
                 execute_daily(db, task)
 
 
+def job_phase2():
+    from .phase2_worker import tick
+    tick()
+
+
 def start_scheduler():
     global _sched
     if _sched and _sched.running:
@@ -66,7 +71,8 @@ def start_scheduler():
     jobs = [('daily_gen', job_daily_generate, CronTrigger(hour=8, timezone='Asia/Shanghai')),
             ('remind', job_remind, CronTrigger(hour='9,14', timezone='Asia/Shanghai')),
             ('weekly', job_weekly_report, CronTrigger(day_of_week='mon', hour=9, timezone='Asia/Shanghai')),
-            ('outbox', job_outbox, 'interval'), ('pending', job_pending, 'interval')]
+            ('outbox', job_outbox, 'interval'), ('pending', job_pending, 'interval'),
+            ('phase2', job_phase2, 'interval')]
     for key, fn, trigger in jobs:
         options = {'seconds': 30} if trigger == 'interval' else {}
         _sched.add_job(fn, trigger, id=key, replace_existing=True, **options)

@@ -18,6 +18,8 @@ DEMO_PASSWORD = 'Demo-Toker-2026!'
 
 
 def seed(db, demo=False):
+    from app.platforms import seed_platforms
+    seed_platforms(db)
     if not db.scalar(select(User).where(User.username == 'admin')):
         password = DEMO_PASSWORD if demo else os.getenv('BOOTSTRAP_ADMIN_PASSWORD', '')
         if len(password) < 10:
