@@ -1,4 +1,4 @@
-# 自由光 · 拓客系统 MVP
+#  拓客系统 MVP
 
 > **二期后端联调版**：动态平台、批量审核、素材/视频任务、工作空间、授权互动和登录安全已增量实现。先看[二期升级指南](docs/PHASE2_DEPLOYMENT.md)、[接口契约](docs/PHASE2_API_CONTRACT.md)、[适配协议](docs/PHASE2_ADAPTERS.md)和[73项测试报告](docs/PHASE2_TEST_REPORT.md)。真实平台服务与账号、AI key、Gitee授权仍待联调，不宣称已可生产上线。
 
