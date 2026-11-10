@@ -4,6 +4,7 @@
  */
 import { ref, reactive, onMounted } from '../core/vue.js';
 import { platformApi } from '../api/platform.js';
+import { phase2Api } from '../api/phase2.js';
 import { ruleApi } from '../api/library.js';
 import { authApi } from '../api/auth.js';
 import { notify, errorMessage } from '../core/ui.js';
@@ -36,6 +37,20 @@ export default {
     const ruleForm = reactive({ rule_type: 'forbidden', pattern: '', note: '' });
     const userForm = reactive({ username: '', password: '', name: '', role: 'operator' });
 
+    /* ---- 二期：动态平台（R1） ---- */
+    const platforms = ref([]);
+    const pfTemplates = ref([]);
+    const pfDlg = ref(false);
+    const pfSaving = ref(false);
+    const pfForm = reactive({ id: null, code: '', name: '', category: 'text', publish_mode: 'manual', default_time: '18:00-20:00', style_prompt: '', enabled: true, expected_version: null });
+
+    /* ---- 二期：AI 供应商（R9） ---- */
+    const providers = ref([]);
+    const provDlg = ref(false);
+    const provSaving = ref(false);
+    const provTesting = reactive({});
+    const provForm = reactive({ id: null, name: '', capability: 'text', endpoint: '', model: '', key_env: '', priority: 100, enabled: true, expected_version: null });
+
     async function load() {
       loading.value = true;
       error.value = '';
@@ -44,14 +59,18 @@ export default {
         const st = await platformApi.status();
         platStatus.value = st || [];
         if (isAdmin()) {
-          const [acc, rl, us] = await Promise.all([
+          const [acc, rl, us, pfs, provs] = await Promise.all([
             platformApi.list().catch(() => []),
             ruleApi.list().catch(() => []),
             authApi.listUsers().catch(() => []),
+            phase2Api.platforms().catch(() => []),
+            phase2Api.providers().catch(() => []),
           ]);
           accounts.value = acc || [];
           rules.value = rl || [];
           users.value = us || [];
+          platforms.value = pfs || [];
+          providers.value = provs || [];
           accounts.value.forEach((a) => {
             if (accForm[a.platform]) {
               accForm[a.platform].appid = a.appid || '';
@@ -122,12 +141,118 @@ export default {
       }
     }
 
+    /* ---- 二期：动态平台管理（R1） ---- */
+    async function loadTemplates() {
+      try { pfTemplates.value = await phase2Api.platformTemplates() || []; } catch (e) { pfTemplates.value = []; }
+    }
+
+    function openPfAdd() {
+      Object.assign(pfForm, { id: null, code: '', name: '', category: 'text', publish_mode: 'manual', default_time: '18:00-20:00', style_prompt: '', enabled: true, expected_version: null });
+      loadTemplates();
+      pfDlg.value = true;
+    }
+
+    function openPfEdit(p) {
+      Object.assign(pfForm, { id: p.id, code: p.code, name: p.name, category: p.category, publish_mode: p.publish_mode, default_time: p.default_time, style_prompt: p.style_prompt, enabled: p.enabled, expected_version: p.version });
+      pfDlg.value = true;
+    }
+
+    function pickTemplate(t) {
+      pfForm.code = t.code;
+      pfForm.name = t.name;
+      pfForm.category = t.category;
+      pfForm.style_prompt = t.style_prompt || '';
+    }
+
+    async function savePlatform() {
+      if (!pfForm.code.trim() || !pfForm.name.trim()) { notify.err('平台 code 与名称必填'); return; }
+      pfSaving.value = true;
+      try {
+        const body = {
+          code: pfForm.code.trim().toLowerCase(), name: pfForm.name.trim(), icon: '', category: pfForm.category,
+          publish_mode: pfForm.publish_mode, default_time: pfForm.default_time, style_prompt: pfForm.style_prompt,
+          enabled: pfForm.enabled, expected_version: pfForm.expected_version,
+        };
+        if (pfForm.id) await phase2Api.editPlatform(pfForm.id, body);
+        else await phase2Api.addPlatform(body);
+        notify.ok('平台已保存');
+        pfDlg.value = false;
+        await load();
+      } catch (e) {
+        notify.err(errorMessage(e));
+      } finally {
+        pfSaving.value = false;
+      }
+    }
+
+    async function togglePlatform(p) {
+      try {
+        await phase2Api.editPlatform(p.id, {
+          code: p.code, name: p.name, icon: p.icon || '', category: p.category,
+          publish_mode: p.publish_mode, default_time: p.default_time, style_prompt: p.style_prompt || '',
+          enabled: !p.enabled, expected_version: p.version,
+        });
+        notify.ok(p.enabled ? '已停用' : '已启用');
+        await load();
+      } catch (e) {
+        notify.err(errorMessage(e));
+      }
+    }
+
+    const pfModeName = (m) => ({ manual: '人工复制', sandbox: '沙盒发布', api: 'API 直发' }[m] || m);
+    const pfCatName = (c) => ({ text: '图文', video: '短视频', commerce: '电商', other: '其它' }[c] || c);
+
+    /* ---- 二期：AI 供应商（R9） ---- */
+    function openProvAdd() {
+      Object.assign(provForm, { id: null, name: '', capability: 'text', endpoint: '', model: '', key_env: '', priority: 100, enabled: true, expected_version: null });
+      provDlg.value = true;
+    }
+
+    async function saveProvider() {
+      if (!provForm.name.trim() || !provForm.endpoint.trim() || !provForm.model.trim()) {
+        notify.err('名称、接口地址与模型名必填'); return;
+      }
+      provSaving.value = true;
+      try {
+        const body = {
+          name: provForm.name.trim(), capability: provForm.capability, endpoint: provForm.endpoint.trim(),
+          model: provForm.model.trim(), key_env: provForm.key_env.trim(), priority: Number(provForm.priority) || 100,
+          enabled: provForm.enabled, expected_version: provForm.expected_version,
+        };
+        await phase2Api.addProvider(body);
+        notify.ok('AI 供应商已添加');
+        provDlg.value = false;
+        await load();
+      } catch (e) {
+        notify.err(errorMessage(e));
+      } finally {
+        provSaving.value = false;
+      }
+    }
+
+    async function testProvider(p) {
+      provTesting[p.id] = true;
+      try {
+        const d = await phase2Api.testProvider(p.id);
+        if (d && d.ok) notify.ok('连接成功（环境密钥校验通过）');
+        else notify.warn(d && d.detail ? d.detail : '连接失败，详见 AI 日志');
+      } catch (e) {
+        notify.err(errorMessage(e));
+      } finally {
+        provTesting[p.id] = false;
+      }
+    }
+
     onMounted(load);
 
     return {
       platStatus, accounts, rules, users, loading, error, forbidden,
       accForm, ruleForm, userForm, load, saveAccount, addRule, removeRule, addUser,
       platformName, PLATFORM_HOME, isAdmin, session, ROLE_VISIBLE, PAGE_ROLES,
+      platforms, pfTemplates, pfDlg, pfSaving, pfForm,
+      openPfAdd, openPfEdit, pickTemplate, savePlatform, togglePlatform, pfModeName, pfCatName,
+      providers, provDlg, provSaving, provForm, provTesting,
+      openProvAdd, saveProvider, testProvider,
     };
   },
   template: `
@@ -208,6 +333,72 @@ export default {
     </div>
 
     <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h4 class="card-title" style="margin:0">发布平台（二期 · 动态扩展）</h4>
+        <el-button size="small" type="primary" @click="openPfAdd">+ 添加平台</el-button>
+      </div>
+      <div class="muted" style="margin:6px 0 10px">不再固定四个平台：可添加淘宝、小红书、快手等任意平台，参与内容生成、待办与看板统计。</div>
+      <el-table :data="platforms" size="small" empty-text="暂无平台">
+        <el-table-column label="平台" min-width="130">
+          <template #default="s">
+            <span class="pf" :class="'pf-' + s.row.code">{{ s.row.name }}</span>
+            <span class="muted tiny">（{{ s.row.code }}）</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="分类" width="90">
+          <template #default="s"><el-tag size="small" type="info">{{ pfCatName(s.row.category) }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="发布方式" width="100">
+          <template #default="s"><span>{{ pfModeName(s.row.publish_mode) }}</span></template>
+        </el-table-column>
+        <el-table-column prop="default_time" label="默认时段" width="110"></el-table-column>
+        <el-table-column label="状态" width="80">
+          <template #default="s">
+            <el-tag size="small" :type="s.row.enabled ? 'success' : 'info'">{{ s.row.enabled ? '启用' : '停用' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="140">
+          <template #default="s">
+            <el-button size="small" text type="primary" @click="openPfEdit(s.row)">编辑</el-button>
+            <el-button size="small" text :type="s.row.enabled ? 'warning' : 'success'" @click="togglePlatform(s.row)">
+              {{ s.row.enabled ? '停用' : '启用' }}
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h4 class="card-title" style="margin:0">AI 供应商（二期 · 文案/评论/视频）</h4>
+        <el-button size="small" type="primary" @click="openProvAdd">+ 添加 AI</el-button>
+      </div>
+      <div class="muted" style="margin:6px 0 10px">
+        可接入任意 OpenAI 兼容服务（DeepSeek / 通义 / 豆包等）。密钥以环境变量引用（TOKER_AI_KEY_*），不落库；配置完成后可一键测试连通。
+      </div>
+      <el-table :data="providers" size="small" empty-text="暂无 AI 供应商，生成将使用演示替身">
+        <el-table-column prop="name" label="名称" min-width="120"></el-table-column>
+        <el-table-column label="能力" width="80">
+          <template #default="s"><el-tag size="small" :type="s.row.capability === 'video' ? 'warning' : 'primary'">{{ s.row.capability === 'video' ? '视频' : '文本' }}</el-tag></template>
+        </el-table-column>
+        <el-table-column prop="model" label="模型" width="140"></el-table-column>
+        <el-table-column prop="endpoint" label="接口地址" min-width="220" show-overflow-tooltip></el-table-column>
+        <el-table-column prop="priority" label="优先级" width="80"></el-table-column>
+        <el-table-column label="状态" width="80">
+          <template #default="s">
+            <el-tag size="small" :type="s.row.enabled ? 'success' : 'info'">{{ s.row.enabled ? '启用' : '停用' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="100">
+          <template #default="s">
+            <el-button v-if="s.row.capability === 'text'" size="small" text type="primary" :loading="provTesting[s.row.id]" @click="testProvider(s.row)">测试</el-button>
+            <span v-else class="muted tiny">任务实测</span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <div class="card">
       <h4 class="card-title">合规红线（管理员）</h4>
       <div class="row mb10">
         <el-select v-model="ruleForm.rule_type" size="small" style="width:130px">
@@ -250,6 +441,69 @@ export default {
       </el-table>
     </div>
   </template>
+
+  <el-dialog v-model="pfDlg" :title="pfForm.id ? '编辑平台' : '添加平台'" width="600px">
+    <el-form label-width="90px">
+      <el-form-item label="快捷模板">
+        <el-select v-if="!pfForm.id" placeholder="选择主流平台模板，可再修改" style="width:100%" @change="pickTemplate">
+          <el-option v-for="t in pfTemplates" :key="t.code" :label="t.name + '（' + t.code + '）'" :value="t"></el-option>
+        </el-select>
+        <span v-else class="muted">编辑模式不提供模板切换</span>
+      </el-form-item>
+      <el-form-item label="平台 code">
+        <el-input v-model="pfForm.code" placeholder="小写字母开头，如 taobao / xiaohongshu" :disabled="!!pfForm.id"></el-input>
+      </el-form-item>
+      <el-form-item label="名称"><el-input v-model="pfForm.name" placeholder="如 淘宝"></el-input></el-form-item>
+      <el-form-item label="分类">
+        <el-select v-model="pfForm.category" style="width:100%">
+          <el-option label="图文" value="text"/>
+          <el-option label="短视频" value="video"/>
+          <el-option label="电商" value="commerce"/>
+          <el-option label="其它" value="other"/>
+        </el-select>
+      </el-form-item>
+      <el-form-item label="发布方式">
+        <el-select v-model="pfForm.publish_mode" style="width:100%">
+          <el-option label="人工复制发布" value="manual"/>
+          <el-option label="沙盒模拟发布" value="sandbox"/>
+          <el-option label="API 直发" value="api"/>
+        </el-select>
+      </el-form-item>
+      <el-form-item label="默认时段"><el-input v-model="pfForm.default_time" placeholder="18:00-20:00"></el-input></el-form-item>
+      <el-form-item label="风格提示词">
+        <el-input v-model="pfForm.style_prompt" type="textarea" :rows="3" placeholder="该平台文案风格要求，AI 生成时使用"></el-input>
+      </el-form-item>
+      <el-form-item label="启用"><el-switch v-model="pfForm.enabled"></el-switch></el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="pfDlg = false">取消</el-button>
+      <el-button type="primary" :loading="pfSaving" @click="savePlatform">保存</el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog v-model="provDlg" title="添加 AI 供应商" width="600px">
+    <el-form label-width="110px">
+      <el-form-item label="名称"><el-input v-model="provForm.name" placeholder="如 DeepSeek 主用"></el-input></el-form-item>
+      <el-form-item label="能力">
+        <el-select v-model="provForm.capability" style="width:100%">
+          <el-option label="文本（文案/评论/私信）" value="text"/>
+          <el-option label="视频生成" value="video"/>
+        </el-select>
+      </el-form-item>
+      <el-form-item label="接口地址"><el-input v-model="provForm.endpoint" placeholder="https://api.deepseek.com/v1（需在服务器白名单内）"></el-input></el-form-item>
+      <el-form-item label="模型名"><el-input v-model="provForm.model" placeholder="deepseek-chat / 服务商模型 ID"></el-input></el-form-item>
+      <el-form-item label="密钥环境变量">
+        <el-input v-model="provForm.key_env" placeholder="TOKER_AI_KEY_TEXT 或 TOKER_AI_KEY_VIDEO"></el-input>
+        <div class="muted tiny mt6">只填环境变量名；真实密钥由运维写入服务器环境变量，不落数据库。</div>
+      </el-form-item>
+      <el-form-item label="优先级"><el-input-number v-model="provForm.priority" :min="0" :max="1000" style="width:140px"></el-input-number></el-form-item>
+      <el-form-item label="启用"><el-switch v-model="provForm.enabled"></el-switch></el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="provDlg = false">取消</el-button>
+      <el-button type="primary" :loading="provSaving" @click="saveProvider">保存</el-button>
+    </template>
+  </el-dialog>
 </template>
 `,
 };

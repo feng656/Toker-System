@@ -4,6 +4,7 @@
  */
 import { ref, reactive, computed, onMounted } from '../core/vue.js';
 import { leadApi, interactionApi } from '../api/business.js';
+import { phase2Api } from '../api/phase2.js';
 import { authApi } from '../api/auth.js';
 import { notify, errorMessage } from '../core/ui.js';
 import {
@@ -29,6 +30,20 @@ export default {
     const simDlg = ref(false);
     const simForm = reactive({ platform: 'douyin', author_name: '', body: '' });
     const simResult = ref(null);
+
+    /* ---- 二期 R7/R11：评论互动 + 私信接管 ---- */
+    const ltab = ref('leads');
+    const wsAccs = ref([]);
+    const dmTmpls = ref([]);
+    const dmProvs = ref([]);
+    const dmMsgs = ref([]);
+    const ctasks = ref([]);
+    const p2Loading = ref(false);
+    const ctForm = reactive({ account_id: null, keyword: '', mode: 'manual', draft: '', video_limit: 5, comments_per_video: 10, date_from: '', sort_order: 'latest' });
+    const ctBusy = reactive({});
+    const tplForm = reactive({ name: '', body: '', enabled: true });
+    const dmForm = reactive({ account_id: null, mode: 'fixed', template_id: null, provider_id: null, persona: '', window_start: '09:00', window_end: '18:00', scope: '', enabled: false });
+    const dmBusy = reactive({});
 
     async function load() {
       loading.value = true;
@@ -128,9 +143,131 @@ export default {
       }
     }
 
+    /* ---- 二期 R7/R11 逻辑 ---- */
+    async function loadPhase2() {
+      p2Loading.value = true;
+      try {
+        const [accs, tmpls, provs, tasks, msgs] = await Promise.all([
+          phase2Api.wsAccounts().catch(() => []),
+          phase2Api.replyTemplates().catch(() => []),
+          phase2Api.providers().catch(() => []),
+          phase2Api.commentTasks().catch(() => []),
+          phase2Api.dmMessages().catch(() => []),
+        ]);
+        wsAccs.value = accs || [];
+        dmTmpls.value = tmpls || [];
+        dmProvs.value = (provs || []).filter((p) => p.enabled);
+        ctasks.value = tasks || [];
+        dmMsgs.value = msgs || [];
+        if (!ctForm.account_id && wsAccs.value.length) ctForm.account_id = wsAccs.value[0].id;
+        if (!dmForm.account_id && wsAccs.value.length) dmForm.account_id = wsAccs.value[0].id;
+      } catch (e) { /* 二期数据失败不阻塞线索页 */ } finally {
+        p2Loading.value = false;
+      }
+    }
+
+    function accLabel(id) {
+      const a = wsAccs.value.find((x) => x.id === id);
+      return a ? a.label : '账号#' + id;
+    }
+
+    async function createCommentTask() {
+      if (!ctForm.account_id) { notify.err('请先在「工作台」添加并登录平台账号'); return; }
+      if (!ctForm.keyword.trim()) { notify.err('搜索关键词必填'); return; }
+      if ((ctForm.mode === 'manual' || ctForm.mode === 'polish') && !ctForm.draft.trim()) {
+        notify.err('自写 / 润色模式需要填写评论草稿'); return;
+      }
+      try {
+        const t = await phase2Api.createCommentTask({
+          account_id: ctForm.account_id, keyword: ctForm.keyword.trim(), mode: ctForm.mode,
+          draft: ctForm.draft, video_limit: ctForm.video_limit, comments_per_video: ctForm.comments_per_video,
+          date_from: ctForm.date_from || null, sort_order: ctForm.sort_order,
+        });
+        notify.ok(`任务 #${t.id} 已创建：关键词「${ctForm.keyword.trim()}」，${ctForm.video_limit} 个视频 × ${ctForm.comments_per_video} 条评论`);
+        await loadPhase2();
+      } catch (e) {
+        notify.err(errorMessage(e));
+      }
+    }
+
+    async function taskAction(t, action) {
+      ctBusy[t.id] = true;
+      try {
+        let d = null;
+        if (action === 'discover') d = await phase2Api.commentTaskDiscover(t.id);
+        else if (action === 'prepare') d = await phase2Api.commentTaskPrepare(t.id);
+        else if (action === 'approve') d = await phase2Api.commentTaskApprove(t.id);
+        else if (action === 'run') d = await phase2Api.commentTaskRun(t.id);
+        else if (action === 'stop') d = await phase2Api.commentTaskStop(t.id);
+        else if (action === 'collect') d = await phase2Api.commentTaskCollect(t.id);
+        const tname = { discover: '视频发现', prepare: '评论生成', approve: '人工批准', run: '执行发送', stop: '停止', collect: '需求收集' }[action];
+        notify.ok(`${tname}已完成`);
+        if (action === 'collect') notify.info(d && d.collected !== undefined ? `已收集 ${d.collected} 条需求入线索库` : '需求已收集');
+        await loadPhase2();
+      } catch (e) {
+        notify.err(errorMessage(e));
+      } finally {
+        ctBusy[t.id] = false;
+      }
+    }
+
+    async function addTemplate() {
+      if (!tplForm.name.trim() || !tplForm.body.trim()) { notify.err('模板名称与内容必填'); return; }
+      try {
+        await phase2Api.addReplyTemplate({ name: tplForm.name.trim(), body: tplForm.body, enabled: tplForm.enabled });
+        notify.ok('话术模板已保存');
+        Object.assign(tplForm, { name: '', body: '', enabled: true });
+        await loadPhase2();
+      } catch (e) {
+        notify.err(errorMessage(e));
+      }
+    }
+
+    async function saveDmPolicy() {
+      if (!dmForm.account_id) { notify.err('请先选择平台账号'); return; }
+      if (dmForm.mode === 'fixed' && !dmForm.template_id) { notify.err('固定话术模式必须选择模板'); return; }
+      dmBusy.policy = true;
+      try {
+        await phase2Api.saveDmPolicy({
+          account_id: dmForm.account_id, mode: dmForm.mode,
+          template_id: dmForm.mode === 'fixed' ? dmForm.template_id : null,
+          provider_id: dmForm.mode === 'ai' ? dmForm.provider_id : null,
+          persona: dmForm.persona,
+          window_start: dmForm.window_start, window_end: dmForm.window_end,
+          scope: dmForm.scope.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
+          enabled: dmForm.enabled,
+        });
+        notify.ok('私信接管策略已保存');
+        await loadPhase2();
+      } catch (e) {
+        notify.err(errorMessage(e));
+      } finally {
+        dmBusy.policy = false;
+      }
+    }
+
+    async function dmAction(m, action) {
+      dmBusy[m.id] = true;
+      try {
+        if (action === 'prepare') await phase2Api.dmPrepare(m.id);
+        else if (action === 'approve') await phase2Api.dmApprove(m.id);
+        else if (action === 'send') await phase2Api.dmSend(m.id);
+        notify.ok('操作完成');
+        await loadPhase2();
+      } catch (e) {
+        notify.err(errorMessage(e));
+      } finally {
+        dmBusy[m.id] = false;
+      }
+    }
+
+    const ctStatusName = (s) => ({ queued: '排队中', discovering: '发现视频', prepared: '评论已生成', approved: '已批准', running: '发送中', succeeded: '已完成', failed: '失败', cancelled: '已停止' }[s] || s);
+    const dmStatusName = (s) => ({ received: '待处理', prepared: '回复已生成', approved: '待发送', sent: '已发送', review: '转人工' }[s] || s);
+
     onMounted(async () => {
       await load();
       await loadSales();
+      loadPhase2();
     });
 
     return {
@@ -139,6 +276,10 @@ export default {
       load, updateLead, openDetail, openNote, saveNote, push, addInteraction,
       platformName, intentName, identityName, leadStatusName, fmtDateTime,
       LEAD_STATUS, INTENT, IDENTITY, isAdmin,
+      ltab, wsAccs, dmTmpls, dmProvs, dmMsgs, ctasks, p2Loading, ctForm, ctBusy,
+      tplForm, dmForm, dmBusy,
+      loadPhase2, accLabel, createCommentTask, taskAction, addTemplate, saveDmPolicy, dmAction,
+      ctStatusName, dmStatusName,
     };
   },
   template: `
@@ -153,7 +294,9 @@ export default {
   </div>
 </div>
 
-<div class="toolbar">
+<el-tabs v-model="ltab">
+  <el-tab-pane label="线索看板" name="leads">
+    <div class="toolbar">
   <el-select v-model="filter.intent" placeholder="全部意向" clearable size="small" style="width:120px">
     <el-option v-for="(v, k) in INTENT" :key="k" :label="v" :value="k"></el-option>
   </el-select>
@@ -216,6 +359,144 @@ export default {
     </div>
   </div>
 </template>
+  </el-tab-pane>
+
+  <el-tab-pane label="评论互动（二期 · 授权评论）" name="comments">
+    <div class="card">
+      <h4 class="card-title">新建评论任务</h4>
+      <div class="row">
+        <el-select v-model="ctForm.account_id" size="small" style="width:170px" placeholder="平台账号">
+          <el-option v-for="a in wsAccs" :key="a.id" :label="accLabel(a.id) + (a.status === 'connected' ? '（已登录）' : '（未登录）')" :value="a.id"></el-option>
+        </el-select>
+        <el-input v-model="ctForm.keyword" size="small" style="width:200px" placeholder="搜索关键词（必填）"></el-input>
+        <el-select v-model="ctForm.mode" size="small" style="width:130px">
+          <el-option label="自写评论" value="manual"/>
+          <el-option label="AI 润色" value="polish"/>
+          <el-option label="AI 帮写" value="ai"/>
+        </el-select>
+        <el-select v-model="ctForm.sort_order" size="small" style="width:110px">
+          <el-option label="按最新" value="latest"/>
+          <el-option label="按热门" value="popular"/>
+        </el-select>
+        <el-date-picker v-model="ctForm.date_from" type="date" size="small" value-format="YYYY-MM-DD" placeholder="发布时间从" style="width:140px"></el-date-picker>
+        <el-input-number v-model="ctForm.video_limit" size="small" :min="1" :max="5" style="width:130px"></el-input-number>
+        <span class="muted">个视频 ×</span>
+        <el-input-number v-model="ctForm.comments_per_video" size="small" :min="1" :max="10" style="width:130px"></el-input-number>
+        <span class="muted">条评论（默认 10）</span>
+      </div>
+      <el-input v-model="ctForm.draft" type="textarea" :rows="3" class="mt10" placeholder="评论草稿（自写 / 润色模式必填；AI 帮写模式留空，由系统按关键词生成）"></el-input>
+      <div class="row mt10">
+        <el-button type="primary" size="small" @click="createCommentTask">保存配置并创建任务</el-button>
+        <span class="muted">启用后请到平台网页版搜索栏填入关键词，确认后系统自动发现视频 → 生成评论 → 人工批准 → 发送。</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h4 class="card-title" style="margin:0">评论任务列表</h4>
+        <el-button size="small" @click="loadPhase2" :loading="p2Loading">刷新</el-button>
+      </div>
+      <el-table :data="ctasks" size="small" empty-text="暂无评论任务">
+        <el-table-column prop="id" label="ID" width="70"></el-table-column>
+        <el-table-column prop="keyword" label="关键词" min-width="130"></el-table-column>
+        <el-table-column label="账号" width="140">
+          <template #default="s"><span>{{ accLabel(s.row.account_id) }}</span></template>
+        </el-table-column>
+        <el-table-column label="模式" width="90">
+          <template #default="s"><span>{{ {manual:'自写',polish:'润色',ai:'帮写'}[s.row.mode] || s.row.mode }}</span></template>
+        </el-table-column>
+        <el-table-column label="规模" width="120">
+          <template #default="s"><span class="muted">{{ s.row.video_limit }} 视频 × {{ s.row.comments_per_video }} 条</span></template>
+        </el-table-column>
+        <el-table-column label="状态" width="110">
+          <template #default="s"><el-tag size="small">{{ ctStatusName(s.row.status) }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="操作" min-width="300">
+          <template #default="s">
+            <el-button size="small" text type="primary" :loading="ctBusy[s.row.id]" @click="taskAction(s.row, 'discover')">发现视频</el-button>
+            <el-button size="small" text type="primary" :loading="ctBusy[s.row.id]" @click="taskAction(s.row, 'prepare')">生成评论</el-button>
+            <el-button size="small" text type="warning" :loading="ctBusy[s.row.id]" @click="taskAction(s.row, 'approve')">批准</el-button>
+            <el-button size="small" text type="success" :loading="ctBusy[s.row.id]" @click="taskAction(s.row, 'run')">执行</el-button>
+            <el-button size="small" text type="danger" :loading="ctBusy[s.row.id]" @click="taskAction(s.row, 'stop')">停止</el-button>
+            <el-button size="small" text :loading="ctBusy[s.row.id]" @click="taskAction(s.row, 'collect')">收集需求</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div class="gap-note">流程：发现视频 → 生成评论（去重 + 去 AI 味）→ 人工批准 → 执行发送 → 收集评论中的需求入线索库。发送默认关闭，需管理员在配置中启用。</div>
+    </div>
+  </el-tab-pane>
+
+  <el-tab-pane label="私信接管（二期）" name="dm">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h4 class="card-title" style="margin:0">接管策略（按平台账号）</h4>
+      </div>
+      <div class="row">
+        <el-select v-model="dmForm.account_id" size="small" style="width:170px" placeholder="平台账号">
+          <el-option v-for="a in wsAccs" :key="a.id" :label="accLabel(a.id)" :value="a.id"></el-option>
+        </el-select>
+        <el-select v-model="dmForm.mode" size="small" style="width:140px">
+          <el-option label="固定话术" value="fixed"/>
+          <el-option label="AI 接管（自选智能体）" value="ai"/>
+        </el-select>
+        <el-select v-if="dmForm.mode === 'fixed'" v-model="dmForm.template_id" size="small" style="width:180px" placeholder="选择话术模板">
+          <el-option v-for="t in dmTmpls" :key="t.id" :label="t.name" :value="t.id"></el-option>
+        </el-select>
+        <el-select v-if="dmForm.mode === 'ai'" v-model="dmForm.provider_id" size="small" style="width:180px" placeholder="选择 AI（文本）">
+          <el-option v-for="p in dmProvs.filter(x => x.capability === 'text')" :key="p.id" :label="p.name" :value="p.id"></el-option>
+        </el-select>
+        <el-time-select v-model="dmForm.window_start" size="small" start="00:00" step="00:30" end="23:30" style="width:110px"></el-time-select>
+        <span class="muted">至</span>
+        <el-time-select v-model="dmForm.window_end" size="small" start="00:00" step="00:30" end="23:30" style="width:110px"></el-time-select>
+        <el-switch v-model="dmForm.enabled" active-text="启用"></el-switch>
+      </div>
+      <el-input v-if="dmForm.mode === 'ai'" v-model="dmForm.persona" class="mt10" placeholder="人设提示词（例：你是自由光公司客服，专业、简洁，不承诺价格）"></el-input>
+      <el-input v-model="dmForm.scope" class="mt10" placeholder="接管范围（发送者关键词，逗号分隔，如：LED,大屏；留空表示需人工明确范围）"></el-input>
+      <div class="row mt10">
+        <el-button type="primary" size="small" :loading="dmBusy.policy" @click="saveDmPolicy">保存策略</el-button>
+        <span class="muted">启用需要明确发送者范围与有效时间窗；高风险私信自动转人工。</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4 class="card-title">话术模板</h4>
+      <div class="row">
+        <el-input v-model="tplForm.name" size="small" style="width:160px" placeholder="模板名称"></el-input>
+        <el-input v-model="tplForm.body" size="small" style="width:360px" placeholder="话术内容"></el-input>
+        <el-button size="small" type="primary" @click="addTemplate">添加模板</el-button>
+      </div>
+      <el-table :data="dmTmpls" size="small" empty-text="暂无模板" class="mt10">
+        <el-table-column prop="name" label="名称" width="160"></el-table-column>
+        <el-table-column prop="body" label="内容" min-width="300" show-overflow-tooltip></el-table-column>
+        <el-table-column label="启用" width="80">
+          <template #default="s"><el-tag size="small" :type="s.row.enabled ? 'success' : 'info'">{{ s.row.enabled ? '是' : '否' }}</el-tag></template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <div class="card">
+      <h4 class="card-title">私信消息（留痕可回溯）</h4>
+      <el-table :data="dmMsgs" size="small" empty-text="暂无私信消息">
+        <el-table-column prop="id" label="ID" width="70"></el-table-column>
+        <el-table-column label="账号" width="140">
+          <template #default="s"><span>{{ accLabel(s.row.account_id) }}</span></template>
+        </el-table-column>
+        <el-table-column prop="sender_id" label="发送者" width="140"></el-table-column>
+        <el-table-column prop="body" label="内容" min-width="220" show-overflow-tooltip></el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="s"><el-tag size="small">{{ dmStatusName(s.row.status) }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="操作" width="220">
+          <template #default="s">
+            <el-button size="small" text type="primary" :loading="dmBusy[s.row.id]" @click="dmAction(s.row, 'prepare')">生成回复</el-button>
+            <el-button size="small" text type="warning" :loading="dmBusy[s.row.id]" @click="dmAction(s.row, 'approve')">批准</el-button>
+            <el-button size="small" text type="success" :loading="dmBusy[s.row.id]" @click="dmAction(s.row, 'send')">发送</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+  </el-tab-pane>
+</el-tabs>
 
 <el-dialog v-model="noteDlg" title="联系记录" width="520px">
   <div class="muted mb10">记录与该线索的最新沟通情况（当前后端只保存最新一条，不保留历史，见《接口缺口清单》GAP-13）。</div>

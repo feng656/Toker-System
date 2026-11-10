@@ -11,6 +11,7 @@ import {
 import { notify, errorMessage } from './core/ui.js';
 import { contentApi } from './api/content.js';
 import { platformApi } from './api/platform.js';
+import { phase2Api } from './api/phase2.js';
 import { roleName } from './core/format.js';
 
 import PageWork from './pages/work.js';
@@ -37,9 +38,10 @@ const PAGES = {
 
 const app = createApp({
   setup() {
-    const loginForm = reactive({ username: '', password: '' });
+    const loginForm = reactive({ username: '', password: '', invite_code: '' });
     const loginError = ref('');
     const loginLoading = ref(false);
+    const loginPolicy = ref(null);
     const route = ref(defaultRoute());
     const routeError = ref(null);
 
@@ -60,7 +62,33 @@ const app = createApp({
       return auto.length ? `${auto.length} 个平台可自动发布，其余人工发布` : '全部平台：人工发布（复制文案）';
     });
 
-    /* ---------------- 登录 ---------------- */
+    /* ---------------- 登录（含二期 PoW 挑战与自动注册策略） ---------------- */
+    async function sha256Hex(s) {
+      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+      return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    /** 解出 sha256(nonce+solution) 以 difficulty 个 0 开头的 solution */
+    async function solveChallenge(nonce, difficulty) {
+      const prefix = '0'.repeat(difficulty || 3);
+      for (let i = 0; i < 1000000; i += 1) {
+        const h = await sha256Hex(nonce + String(i));
+        if (h.startsWith(prefix)) return String(i);
+      }
+      return null;
+    }
+
+    async function attemptLogin(payload) {
+      const res = await window.fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      let d = null;
+      try { d = await res.json(); } catch (e) { d = null; }
+      return { res, d };
+    }
+
     async function doLogin() {
       loginError.value = '';
       if (!loginForm.username.trim() || !loginForm.password) {
@@ -69,16 +97,33 @@ const app = createApp({
       }
       loginLoading.value = true;
       try {
-        const d = await window.fetch('/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: loginForm.username.trim(), password: loginForm.password }),
-        }).then((r) => r.json());
+        const payload = { username: loginForm.username.trim(), password: loginForm.password };
+        if (loginForm.invite_code.trim()) payload.invite_code = loginForm.invite_code.trim();
+        let { res, d } = await attemptLogin(payload);
+        // 428：失败次数达到阈值，自动完成工作量证明挑战后重试一次
+        if (res.status === 428 && d && d.detail && d.detail.challenge_url) {
+          const ch = await window.fetch(d.detail.challenge_url, { method: 'POST' })
+            .then((r) => r.json()).catch(() => null);
+          if (ch && ch.nonce) {
+            const solution = await solveChallenge(ch.nonce, ch.difficulty);
+            if (solution != null) {
+              payload.challenge_id = ch.challenge_id;
+              payload.challenge_solution = solution;
+              ({ res, d } = await attemptLogin(payload));
+            }
+          }
+        }
         if (d && d.token) {
           setSession(d.token, d.user || {});
           loginForm.password = '';
+          loginForm.invite_code = '';
           navigate(defaultRoute(), true);
           await afterLogin();
+        } else if (res.status === 429) {
+          const ra = res.headers.get('Retry-After');
+          loginError.value = `尝试过于频繁，已被限流${ra ? `，请 ${ra} 秒后重试` : '，请稍后重试'}。`;
+        } else if (d && d.detail && typeof d.detail === 'object') {
+          loginError.value = d.detail.message || d.detail.detail || '登录失败';
         } else {
           loginError.value = (d && (d.detail || d.msg)) || '登录失败';
         }
@@ -87,6 +132,11 @@ const app = createApp({
       } finally {
         loginLoading.value = false;
       }
+    }
+
+    /** 读取登录策略（自动注册模式），登录页按模式显示邀请码输入 */
+    async function loadLoginPolicy() {
+      try { loginPolicy.value = await phase2Api.authPolicy(); } catch (e) { loginPolicy.value = null; }
     }
 
     function logout() {
@@ -152,6 +202,7 @@ const app = createApp({
         clearSession();
         notify.warn('登录已失效，请重新登录');
       });
+      if (!session.token) await loadLoginPolicy();
 
       if (session.token) {
         try {
@@ -176,7 +227,7 @@ const app = createApp({
     });
 
     return {
-      session, loginForm, loginError, loginLoading, route, routeError, currentPage,
+      session, loginForm, loginError, loginLoading, loginPolicy, route, routeError, currentPage,
       visibleMenus, menuItems, fallbackRoute, modeSummary,
       doLogin, logout, navigate, defaultRoute, roleName, isAdmin,
     };

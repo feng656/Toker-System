@@ -4,6 +4,7 @@
  */
 import { ref, reactive, computed, onMounted } from '../core/vue.js';
 import { materialApi } from '../api/library.js';
+import { phase2Api } from '../api/phase2.js';
 import { notify, errorMessage } from '../core/ui.js';
 import {
   publicityName, bizLineClass, bizLineName, MATERIAL_CATEGORIES,
@@ -24,6 +25,18 @@ export default {
     const saving = ref(false);
     const form = reactive({ id: null, category: '案例', biz_line: 'both', title: '', content: '', publicity: 'public', tags: '', enabled: true });
     const importDlg = ref(false);
+
+    /* ---- 二期 R3：图片/媒体素材（MinIO，公司照片） ---- */
+    const mtab = ref('text');
+    const assets = ref([]);
+    const assetsLoading = ref(false);
+    const assetsError = ref('');
+    const assetUrls = reactive({});
+    const upDlg = ref(false);
+    const upSaving = ref(false);
+    const upForm = reactive({ publicity: 'internal', tags: '', category: '公司照片' });
+    const upFiles = ref([]);
+    const afilter = reactive({ publicity: '', keyword: '' });
 
     async function load() {
       loading.value = true;
@@ -142,12 +155,90 @@ export default {
     function isImage(url) { return /\.(png|jpe?g|webp|gif|bmp)(\?|$)/i.test(url || ''); }
     function isVideo(url) { return /\.(mp4|mov|webm|avi|mkv)(\?|$)/i.test(url || ''); }
 
-    onMounted(load);
+    /* ---- 二期 R3 逻辑 ---- */
+    async function loadAssets() {
+      assetsLoading.value = true;
+      assetsError.value = '';
+      try {
+        assets.value = await phase2Api.assets({ limit: 100 }) || [];
+      } catch (e) {
+        assetsError.value = errorMessage(e);
+        assets.value = [];
+      } finally {
+        assetsLoading.value = false;
+      }
+    }
+
+    async function loadAssetUrl(a) {
+      if (assetUrls[a.id] !== undefined && assetUrls[a.id] !== '') return;
+      try {
+        const d = await phase2Api.assetUrl(a.id);
+        assetUrls[a.id] = (d && d.url) || '';
+      } catch (e) {
+        assetUrls[a.id] = '';
+      }
+    }
+
+    function openUpload() {
+      Object.assign(upForm, { publicity: 'internal', tags: '', category: '公司照片' });
+      upFiles.value = [];
+      upDlg.value = true;
+    }
+
+    function onFileChange(file, fileList) {
+      upFiles.value = fileList.filter((f) => f.raw).map((f) => f.raw);
+    }
+
+    async function doUpload() {
+      if (!upFiles.value.length) { notify.err('请选择图片（每批 1–20 张）'); return; }
+      const fd = new FormData();
+      upFiles.value.forEach((f) => fd.append('files', f));
+      fd.append('publicity', upForm.publicity);
+      fd.append('tags', upForm.tags);
+      fd.append('category', upForm.category);
+      upSaving.value = true;
+      try {
+        const d = await phase2Api.uploadAssets(fd);
+        notify.ok(`已上传 ${(d.items || []).length} 张图片（上传时会清除图片元数据）`);
+        upDlg.value = false;
+        await loadAssets();
+      } catch (e) {
+        notify.err(errorMessage(e));
+      } finally {
+        upSaving.value = false;
+      }
+    }
+
+    async function editAssetPublicity(a, publicity) {
+      try {
+        await phase2Api.editAsset(a.id, {
+          title: a.title, publicity, tags: a.tags || '', category: a.category || '',
+          expected_version: a.version,
+        });
+        notify.ok('公开级别已更新');
+        await loadAssets();
+      } catch (e) {
+        notify.err(errorMessage(e));
+      }
+    }
+
+    const filteredAssets = computed(() => {
+      const kw = afilter.keyword.trim();
+      return assets.value.filter((a) => {
+        if (afilter.publicity && a.publicity !== afilter.publicity) return false;
+        if (kw && (a.title || '').indexOf(kw) < 0 && (a.tags || '').indexOf(kw) < 0 && (a.category || '').indexOf(kw) < 0) return false;
+        return true;
+      });
+    });
+
+    onMounted(() => { load(); loadAssets(); });
 
     return {
       materials, filtered, loading, error, forbidden, filter, dlg, editing, saving, form, importDlg,
       load, openCreate, openEdit, save, toggleEnabled, remove, pickFile, fileName, isImage, isVideo,
       canWriteContent, isAdmin, publicityName, bizLineClass, bizLineName, MATERIAL_CATEGORIES,
+      mtab, assets, assetsLoading, assetsError, assetUrls, upDlg, upSaving, upForm, upFiles,
+      afilter, filteredAssets, loadAssets, loadAssetUrl, openUpload, onFileChange, doUpload, editAssetPublicity,
     };
   },
   template: `
@@ -163,7 +254,9 @@ export default {
   </div>
 </div>
 
-<div class="toolbar">
+<el-tabs v-model="mtab">
+  <el-tab-pane label="文字素材" name="text">
+    <div class="toolbar">
   <el-select v-model="filter.category" placeholder="全部分类" clearable size="small" style="width:140px">
     <el-option v-for="c in MATERIAL_CATEGORIES" :key="c" :label="c" :value="c"></el-option>
   </el-select>
@@ -223,6 +316,72 @@ export default {
     </div>
   </div>
 </template>
+
+  </el-tab-pane>
+
+  <el-tab-pane label="图片媒体（二期 · 公司照片）" name="media">
+    <div class="toolbar">
+      <el-button v-if="canWriteContent" size="small" type="primary" @click="openUpload">+ 上传公司照片</el-button>
+      <el-select v-model="afilter.publicity" placeholder="全部公开级别" clearable size="small" style="width:130px">
+        <el-option label="可公开" value="public"/>
+        <el-option label="需脱敏" value="masked"/>
+        <el-option label="仅内部" value="internal"/>
+      </el-select>
+      <el-input v-model="afilter.keyword" placeholder="搜索标题 / 标签 / 分类" size="small" clearable style="width:200px"></el-input>
+      <el-button size="small" @click="loadAssets" :loading="assetsLoading">刷新</el-button>
+      <span class="muted">共 {{ filteredAssets.length }} / {{ assets.length }} 张</span>
+    </div>
+    <div v-if="assetsError" class="alert-strip error mt10">{{ assetsError }}</div>
+    <div v-if="!filteredAssets.length && !assetsLoading" class="card">
+      <div class="state-box"><el-icon><i class="el-icon-picture" /></el-icon>还没有图片素材。公司照片上传后会清洗元数据、私有存储，只有「可公开」级别才能发给 AI 生成。</div>
+    </div>
+    <div class="grid3">
+      <div class="card" v-for="a in filteredAssets" :key="a.id">
+        <div @mouseenter="loadAssetUrl(a)">
+          <img v-if="assetUrls[a.id]" :src="assetUrls[a.id]" style="width:100%;height:150px;object-fit:cover;border-radius:6px" />
+          <div v-else style="width:100%;height:150px;background:#f5f7fa;border-radius:6px;display:flex;align-items:center;justify-content:center" class="muted">预览加载中…</div>
+        </div>
+        <div class="row mt6" style="justify-content:space-between">
+          <b style="font-size:13px">{{ a.title }}</b>
+          <el-tag size="small" :type="a.publicity === 'public' ? 'success' : (a.publicity === 'masked' ? 'warning' : 'danger')">
+            {{ publicityName(a.publicity) }}
+          </el-tag>
+        </div>
+        <div class="muted tiny mt6">{{ a.category || '未分类' }}<template v-if="a.tags"> · {{ a.tags }}</template></div>
+        <div v-if="canWriteContent" class="mt6">
+          <el-select size="small" :model-value="a.publicity" style="width:130px" @change="(v) => editAssetPublicity(a, v)">
+            <el-option label="可公开" value="public"/>
+            <el-option label="需脱敏" value="masked"/>
+            <el-option label="仅内部" value="internal"/>
+          </el-select>
+        </div>
+      </div>
+    </div>
+  </el-tab-pane>
+</el-tabs>
+
+<el-dialog v-model="upDlg" title="上传公司照片" width="520px">
+  <el-form label-width="90px">
+    <el-form-item label="选择图片">
+      <el-upload :auto-upload="false" multiple :limit="20" :on-change="onFileChange" :file-list="[]" accept="image/*" drag>
+        <div><b>点击或拖拽图片到这里</b><div class="muted tiny">每批 1–20 张，上传时自动清除 EXIF 等元数据</div></div>
+      </el-upload>
+    </el-form-item>
+    <el-form-item label="公开级别">
+      <el-select v-model="upForm.publicity" style="width:100%">
+        <el-option label="可公开（可发给 AI）" value="public"/>
+        <el-option label="需脱敏（人工改写后使用）" value="masked"/>
+        <el-option label="仅内部（不发 AI）" value="internal"/>
+      </el-select>
+    </el-form-item>
+    <el-form-item label="分类"><el-input v-model="upForm.category" placeholder="如 公司照片 / 工地实拍 / 产品图"></el-input></el-form-item>
+    <el-form-item label="标签"><el-input v-model="upForm.tags" placeholder="逗号分隔，如 LED,报告厅"></el-input></el-form-item>
+  </el-form>
+  <template #footer>
+    <el-button @click="upDlg = false">取消</el-button>
+    <el-button type="primary" :loading="upSaving" @click="doUpload">上传</el-button>
+  </template>
+</el-dialog>
 
 <el-dialog v-model="dlg" :title="form.id ? '编辑素材' : '新增素材'" width="620px">
   <el-form label-width="86px">
