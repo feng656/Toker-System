@@ -30,6 +30,8 @@ export const phase2Api = {
   generateContent: (body) => http.post('/assets/generate-content', body),
 
   /* ---- R2/R6 工作空间与扫码登录 ---- */
+  loginPlatforms: () => http.get('/workspace/platforms'),
+  addLoginPlatform: (body) => http.post('/workspace/platforms', body),
   wsAccounts: () => http.get('/workspace/accounts'),
   addWsAccount: (body) => http.post('/workspace/accounts', body),
   wsLogin: (aid, body) => http.post(`/workspace/accounts/${aid}/login`, body),

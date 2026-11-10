@@ -14,6 +14,28 @@ class PlatformIn(Input):
     style_prompt: str = Field(default='', max_length=3000)
     enabled: bool = True
     expected_version: int | None = None
+    generation_enabled: bool | None = None
+    login_url: str | None = Field(default=None, max_length=700)
+
+    @field_validator('login_url')
+    @classmethod
+    def valid_login_url(cls, value):
+        from .login_catalog import validate_login_url
+        return validate_login_url(value) if value is not None else value
+
+
+class LoginPlatformIn(Input):
+    name: str = Field(min_length=1, max_length=100)
+    code: Platform | None = None
+    category: Literal['text', 'video', 'commerce', 'other'] = 'other'
+    login_url: str = Field(default='', max_length=700)
+    request_key: str = Field(min_length=16, max_length=100)
+
+    @field_validator('login_url')
+    @classmethod
+    def valid_login_url(cls, value):
+        from .login_catalog import validate_login_url
+        return validate_login_url(value)
 
 
 class BulkReviewIn(Input):
@@ -75,6 +97,8 @@ class VideoIn(Input):
 class AccountIn(Input):
     platform_id: int = Field(gt=0)
     label: str = Field(min_length=1, max_length=100)
+    login_hint: str = Field(default='', max_length=200)
+    request_key: str | None = Field(default=None, min_length=16, max_length=100)
 
 
 class AccountLoginIn(Input):

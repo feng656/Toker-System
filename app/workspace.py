@@ -81,12 +81,14 @@ def account_payload(db, account):
 
 def public_account(account):
     from .api import as_dict
-    result = as_dict(account, {'session_ciphertext', 'login_attempt_id', 'qr_object_ref'})
+    result = as_dict(account, {'session_ciphertext', 'login_attempt_id', 'qr_object_ref', 'request_key'})
     now = utcnow()
     if account.status == 'connected' and (not account.session_expires_at or account.session_expires_at <= now):
         result['status'] = 'expired'
-    result['expires_soon'] = bool(account.session_expires_at and (account.session_expires_at-now).total_seconds() < 600)
-    result['qr_available'] = bool(account.qr_object_ref and account.qr_expires_at and account.qr_expires_at > now)
+    if account.status == 'awaiting_scan' and (not account.qr_expires_at or account.qr_expires_at <= now):
+        result['status'] = 'expired'
+    result['expires_soon'] = bool(result['status'] == 'connected' and account.session_expires_at and (account.session_expires_at-now).total_seconds() < 600)
+    result['qr_available'] = bool(account.status == 'awaiting_scan' and account.qr_object_ref and account.qr_expires_at and account.qr_expires_at > now)
     return result
 
 
@@ -94,29 +96,49 @@ def apply_login(account, data):
     if data.get('status') == 'connected':
         if not isinstance(data.get('session'), dict) or not data['session']:
             raise HTTPException(502, '登录响应缺少真实会话')
-        account.session_expires_at = expiry(data.get('expires_at'))
-        account.session_ciphertext = encrypt(data['session'])
+        expires_at = expiry(data.get('expires_at'))
+        ciphertext = encrypt(data['session'])
+        account.session_expires_at, account.session_ciphertext = expires_at, ciphertext
         account.status, account.error = 'connected', ''
         account.nickname = str(data.get('nickname', ''))[:100]
         account.avatar_url = str(data.get('avatar_url', ''))[:700]
-        account.qr_object_ref, account.qr_expires_at = '', None
+        account.qr_object_ref, account.qr_expires_at, account.login_attempt_id = '', None, ''
     elif data.get('status') == 'awaiting_scan':
         from .media import clean_image
         if not data.get('attempt_id') or len(str(data['attempt_id'])) > 200:
             raise HTTPException(502, '缺少扫码会话标识')
-        try:
-            raw = data['qr_png_base64']
-            if len(raw) > config.UPLOAD_MAX_BYTES * 2:
-                raise ValueError()
-            png = clean_image(base64.b64decode(raw, validate=True))
-        except (KeyError, ValueError):
-            raise HTTPException(502, '二维码图片无效')
-        account.qr_expires_at = expiry(data.get('expires_at'))
-        account.qr_object_ref = storage.put(png, 'login-qr.png', 'image/png')
+        expires_at = expiry(data.get('expires_at'))
+        raw = data.get('qr_png_base64')
+        if raw is None:
+            # 状态轮询可不重复传图，但必须是已有、未过期的同一次扫码，不能悄悄延长期限。
+            if (account.status != 'awaiting_scan' or str(data['attempt_id']) != account.login_attempt_id
+                or not account.qr_object_ref or not account.qr_expires_at or account.qr_expires_at <= utcnow()):
+                raise HTTPException(502, '扫码响应缺少二维码图片')
+            expires_at = min(expires_at, account.qr_expires_at)
+            ref = account.qr_object_ref
+        else:
+            try:
+                if not isinstance(raw, str) or len(raw) > config.UPLOAD_MAX_BYTES * 2:
+                    raise ValueError()
+                png = clean_image(base64.b64decode(raw, validate=True))
+            except (KeyError, ValueError, HTTPException):
+                raise HTTPException(502, '扫码服务返回的二维码图片无效')
+            # 相同轮询图片不重复保存。
+            if account.login_attempt_id == str(data['attempt_id']) and account.qr_expires_at == expires_at and account.qr_object_ref:
+                ref = account.qr_object_ref
+            else:
+                try:
+                    ref = storage.put(png, 'login-qr.png', 'image/png')
+                except Exception:
+                    raise HTTPException(503, '二维码存储不可用，请联系管理员检查私有对象存储')
+        account.qr_expires_at, account.qr_object_ref = expires_at, ref
         account.login_attempt_id = str(data['attempt_id'])
-        account.status = 'awaiting_scan'
+        account.status, account.error = 'awaiting_scan', ''
+        account.session_ciphertext, account.session_expires_at = '', None
     elif data.get('status') == 'expired':
         account.status, account.qr_object_ref = 'expired', ''
+        account.qr_expires_at, account.session_expires_at = None, None
+        account.session_ciphertext, account.login_attempt_id = '', ''
     else:
         raise HTTPException(502, '未知登录状态，未记录登录成功')
 
@@ -124,13 +146,17 @@ def apply_login(account, data):
 def login(db, account, body, actor_id):
     cipher()  # 密钥缺失时不能把账号密码发送到外部。
     lock(db, f'account:{account.id}')
+    db.refresh(account)
     platform = db.get(Platform, account.platform_id)
-    if not platform.enabled:
-        raise HTTPException(409, '平台已停用')
+    from .login_catalog import check_login_platform
+    check_login_platform(platform)
+    if body.login_mode == 'qr' and public_account(account)['qr_available']:
+        return public_account(account)  # 连点/网络重试复用未过期二维码，不重复创建远端会话。
     if body.login_mode == 'password' and (not body.username or not body.password):
         raise HTTPException(422, '账密登录必须提供账号和密码')
     data = request('accounts/login', {'account_id': account.id, 'platform': platform.code,
-        'mode': body.login_mode, 'username': body.username, 'password': body.password})
+        'mode': body.login_mode, 'username': body.username or account.login_hint,
+        'password': body.password if body.login_mode == 'password' else ''})
     apply_login(account, data)
     event(db, 'account', account.id, 'login_' + account.status, actor_id)
     db.commit()
@@ -139,18 +165,31 @@ def login(db, account, body, actor_id):
 
 def refresh(db, account, actor_id):
     lock(db, f'account:{account.id}')
-    payload = {'account_id': account.id, 'attempt_id': account.login_attempt_id}
+    db.refresh(account)
+    from .login_catalog import check_login_platform
+    platform = db.get(Platform, account.platform_id)
+    check_login_platform(platform)
+    if public_account(account)['status'] == 'expired':
+        apply_login(account, {'status': 'expired'})
+        db.commit()
+        return public_account(account)
+    if account.status not in ('awaiting_scan', 'connected'):
+        raise HTTPException(409, '请先获取二维码并发起登录')
+    before = account.status
+    payload = {'account_id': account.id, 'platform': platform.code, 'attempt_id': account.login_attempt_id}
     if account.status == 'connected':
         payload['session'] = decrypt(account.session_ciphertext)
     data = request('accounts/refresh', payload)
     apply_login(account, data)
-    event(db, 'account', account.id, 'refresh_' + account.status, actor_id)
+    if before != account.status:
+        event(db, 'account', account.id, 'refresh_' + account.status, actor_id)
     db.commit()
     return public_account(account)
 
 
 def logout(db, account, actor_id):
     lock(db, f'account:{account.id}')
+    db.refresh(account)
     # 远端必须确认撤销；不可把本地清空伪称远端登出。
     request('accounts/logout', {'account_id': account.id, 'attempt_id': account.login_attempt_id,
         'session': decrypt(account.session_ciphertext) if account.session_ciphertext else {}})

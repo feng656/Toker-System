@@ -42,7 +42,7 @@ export default {
     const pfTemplates = ref([]);
     const pfDlg = ref(false);
     const pfSaving = ref(false);
-    const pfForm = reactive({ id: null, code: '', name: '', category: 'text', publish_mode: 'manual', default_time: '18:00-20:00', style_prompt: '', enabled: true, expected_version: null });
+    const pfForm = reactive({ id: null, code: '', name: '', category: 'text', publish_mode: 'manual', default_time: '18:00-20:00', style_prompt: '', enabled: true, generation_enabled: true, login_url: '', expected_version: null });
 
     /* ---- 二期：AI 供应商（R9） ---- */
     const providers = ref([]);
@@ -147,13 +147,13 @@ export default {
     }
 
     function openPfAdd() {
-      Object.assign(pfForm, { id: null, code: '', name: '', category: 'text', publish_mode: 'manual', default_time: '18:00-20:00', style_prompt: '', enabled: true, expected_version: null });
+      Object.assign(pfForm, { id: null, code: '', name: '', category: 'text', publish_mode: 'manual', default_time: '18:00-20:00', style_prompt: '', enabled: true, generation_enabled: true, login_url: '', expected_version: null });
       loadTemplates();
       pfDlg.value = true;
     }
 
     function openPfEdit(p) {
-      Object.assign(pfForm, { id: p.id, code: p.code, name: p.name, category: p.category, publish_mode: p.publish_mode, default_time: p.default_time, style_prompt: p.style_prompt, enabled: p.enabled, expected_version: p.version });
+      Object.assign(pfForm, { id: p.id, code: p.code, name: p.name, category: p.category, publish_mode: p.publish_mode, default_time: p.default_time, style_prompt: p.style_prompt, enabled: p.enabled, generation_enabled: p.generation_enabled !== false, login_url: p.login_url || '', expected_version: p.version });
       pfDlg.value = true;
     }
 
@@ -171,7 +171,7 @@ export default {
         const body = {
           code: pfForm.code.trim().toLowerCase(), name: pfForm.name.trim(), icon: '', category: pfForm.category,
           publish_mode: pfForm.publish_mode, default_time: pfForm.default_time, style_prompt: pfForm.style_prompt,
-          enabled: pfForm.enabled, expected_version: pfForm.expected_version,
+          enabled: pfForm.enabled, generation_enabled: pfForm.generation_enabled, login_url: pfForm.login_url, expected_version: pfForm.expected_version,
         };
         if (pfForm.id) await phase2Api.editPlatform(pfForm.id, body);
         else await phase2Api.addPlatform(body);
@@ -473,7 +473,9 @@ export default {
       <el-form-item label="风格提示词">
         <el-input v-model="pfForm.style_prompt" type="textarea" :rows="3" placeholder="该平台文案风格要求，AI 生成时使用"></el-input>
       </el-form-item>
-      <el-form-item label="启用"><el-switch v-model="pfForm.enabled"></el-switch></el-form-item>
+      <el-form-item label="允许使用"><el-switch v-model="pfForm.enabled"></el-switch></el-form-item>
+      <el-form-item label="内容生成"><el-switch v-model="pfForm.generation_enabled"></el-switch><div class="muted tiny">关闭时仅用于账号管理，不增加每日内容包。</div></el-form-item>
+      <el-form-item label="登录入口"><el-input v-model="pfForm.login_url" placeholder="https://平台官方域名/（仅人工打开）"></el-input></el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="pfDlg = false">取消</el-button>

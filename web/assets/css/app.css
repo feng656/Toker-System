@@ -6,6 +6,29 @@
 html,body{height:100%}
 body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:#f5f7fa;color:#303133}
 
+/* ---------- 平台账号：复用现有Element Plus令牌，不改动页面整体风格 ---------- */
+.pa-heading,.pa-account{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.pa-account{padding:14px 0;border-top:1px solid var(--el-border-color-lighter)}
+.pa-account:first-of-type{margin-top:12px}
+.pa-platform-name{display:inline-block;margin-right:8px;color:var(--el-color-primary);font-weight:600}
+.pa-step{font-size:14px;font-weight:600;margin:16px 0 10px;color:var(--el-text-color-primary)}
+.pa-platform-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0;max-height:296px;overflow:auto;padding:2px}
+.pa-platform-option{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:11px 12px;border:1px solid var(--el-border-color);border-radius:var(--el-border-radius-base);background:var(--el-bg-color);color:var(--el-text-color-primary);font:inherit;cursor:pointer;text-align:left;min-height:66px}
+.pa-platform-option small{font-size:11px;color:var(--el-text-color-secondary)}
+.pa-platform-option.selected{border-color:var(--el-color-primary);background:var(--el-color-primary-light-9)}
+.pa-platform-option:hover:not(:disabled){border-color:var(--el-color-primary)}
+.pa-platform-option:focus-visible{outline:2px solid var(--el-color-primary);outline-offset:2px}
+.pa-platform-option:disabled{opacity:.55;cursor:not-allowed;background:var(--el-fill-color-light)}
+.pa-dialog .pa-full{width:100%}
+.pa-dialog.el-dialog{margin-top:4vh!important;max-height:92vh;display:flex;flex-direction:column}
+.pa-dialog .el-dialog__body{overflow-y:auto;min-height:0}
+.pa-dialog .el-dialog__header,.pa-dialog .el-dialog__footer{flex-shrink:0}
+.pa-qr-content{text-align:center;overflow-wrap:anywhere}
+.pa-qr-image{display:block;width:240px;height:240px;max-width:100%;object-fit:contain;margin:18px auto;border:1px solid var(--el-border-color-lighter);border-radius:var(--el-border-radius-base)}
+.pa-qr-content .alert-strip{text-align:left}
+.pa-qr-content a{color:var(--el-color-primary)}
+@media(max-width:600px){.pa-platform-grid{grid-template-columns:repeat(2,minmax(0,1fr));max-height:260px}.pa-dialog .el-dialog__body{padding-top:4px}.pa-heading>.row{width:100%}.pa-dialog .el-dialog__footer{white-space:normal}}
+
 /* ---------- 登录 ---------- */
 .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(160deg,#1f2d3d,#2b3f56)}
 .login-card{width:360px;background:#fff;border-radius:12px;padding:30px 28px;box-shadow:0 12px 40px rgba(0,0,0,.25)}

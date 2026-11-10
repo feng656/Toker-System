@@ -36,7 +36,10 @@ def connected(client,headers,monkeypatch):
 
 
 def test_dynamic_platform_generation_filters_and_history(client,headers):
-    p=post(client,headers,'/platforms',{'code':'taobao','name':'淘宝','category':'commerce','style_prompt':'明确规格'},201)
+    p=next(x for x in platforms(client,headers) if x['code']=='taobao')
+    response=client.put(f'/api/v1/platforms/{p["id"]}',headers=headers,json={'code':'taobao','name':'淘宝','category':'commerce','style_prompt':'明确规格','generation_enabled':True,'expected_version':p['version']})
+    assert response.status_code==200,response.text
+    p=response.json()
     vs=generated(client,headers)
     assert len(vs)==10
     matches=client.get('/api/v1/variants',params={'platform_id':p['id']},headers=headers).json()
@@ -44,7 +47,7 @@ def test_dynamic_platform_generation_filters_and_history(client,headers):
     response=client.put(f'/api/v1/platforms/{p["id"]}',json={'code':'taobao','name':'淘宝','enabled':False,'expected_version':p['version']},headers=headers)
     assert response.status_code==200
     assert len(client.get('/api/v1/contents',headers=headers).json())==2
-    assert client.get('/api/v1/dashboard/platforms',headers=headers).json()[-1]['platform_id']==p['id']
+    assert any(x['platform_id']==p['id'] for x in client.get('/api/v1/dashboard/platforms',headers=headers).json())
     assert client.get('/api/platforms',headers=headers).headers['deprecation']=='true'
 
 

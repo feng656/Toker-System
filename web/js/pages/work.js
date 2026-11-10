@@ -24,11 +24,13 @@ import {
   CHANNELS, CHANNEL_MAP, channelName, emptyDrafts, fillDraft, buildCopy,
 } from '../core/platforms.js';
 import { isAdmin } from '../core/store.js';
+import PlatformAccounts from '../components/platform-accounts.js';
 
 const EP = () => window.ElementPlus;
 
 export default {
   name: 'PageWork',
+  components: { PlatformAccounts },
   setup() {
     /* ---------------- 内容池 ---------------- */
     const items = ref([]);
@@ -110,106 +112,23 @@ export default {
     const materialEmpty = computed(() => coverage.value.total === 0);
 
     /* ---------------- 二期：平台工作空间（R2/R6 扫码登录 + 沙盒发布） ---------------- */
-    const wsAccounts = ref([]);
-    const wsPlatforms = ref([]);
     const wsJobs = ref([]);
     const wsLoading = ref(false);
     const wsError = ref('');
-    const wsAddDlg = ref(false);
-    const wsAddForm = reactive({ platform_id: null, label: '' });
-    const qrDlg = ref(false);
-    const qrAcc = ref(null);
-    const qrUrl = ref('');
-    let qrTimer = null;
-
-    const wsStatusName = (s) => ({ connected: '已登录', awaiting_scan: '待扫码', expired: '已过期', pending: '未登录', error: '异常' }[s] || s);
     const jobStatusName = (s) => ({ queued: '排队中', running: '执行中', awaiting_confirmation: '待人工确认', succeeded: '已发布', failed: '失败', cancelled: '已取消' }[s] || s);
     const jobStatusTag = (s) => ({ queued: 'info', running: 'primary', awaiting_confirmation: 'warning', succeeded: 'success', failed: 'danger', cancelled: 'info' }[s] || 'info');
-
-    function pfNameOf(id) {
-      const p = wsPlatforms.value.find((x) => x.id === id);
-      return p ? p.name : '平台#' + id;
-    }
 
     async function loadWorkspace() {
       wsLoading.value = true;
       wsError.value = '';
       try {
-        const [ov, pfs] = await Promise.all([
-          phase2Api.wsOverview(),
-          phase2Api.platforms().catch(() => []),
-        ]);
-        wsAccounts.value = ov.accounts || [];
+        const ov = await phase2Api.wsOverview();
         wsJobs.value = ov.jobs || [];
-        wsPlatforms.value = pfs || [];
       } catch (e) {
         wsError.value = errorMessage(e);
       } finally {
         wsLoading.value = false;
       }
-    }
-
-    function openWsAdd() {
-      Object.assign(wsAddForm, { platform_id: wsPlatforms.value.length ? wsPlatforms.value[0].id : null, label: '' });
-      wsAddDlg.value = true;
-    }
-
-    async function saveWsAccount() {
-      if (!wsAddForm.platform_id || !wsAddForm.label.trim()) { notify.err('请选择平台并填写账号名称'); return; }
-      try {
-        await phase2Api.addWsAccount({ platform_id: wsAddForm.platform_id, label: wsAddForm.label.trim() });
-        notify.ok('账号已创建，请扫码登录');
-        wsAddDlg.value = false;
-        await loadWorkspace();
-      } catch (e) {
-        notify.err(errorMessage(e));
-      }
-    }
-
-    function stopQrTimer() {
-      if (qrTimer) { window.clearInterval(qrTimer); qrTimer = null; }
-    }
-
-    async function startQrLogin(a) {
-      try {
-        await phase2Api.wsLogin(a.id, { login_mode: 'qr' });
-      } catch (e) {
-        notify.warn('发起扫码失败：' + errorMessage(e) + '（未配置外部扫码服务时无法登录，属预期）');
-        return;
-      }
-      qrAcc.value = a;
-      qrUrl.value = '';
-      qrDlg.value = true;
-      stopQrTimer();
-      await pollSession();
-      qrTimer = window.setInterval(pollSession, 3000);
-    }
-
-    async function pollSession() {
-      if (!qrAcc.value) return;
-      try {
-        const s = await phase2Api.wsSession(qrAcc.value.id);
-        qrUrl.value = (s.qr_available && s.qr_url) ? s.qr_url : '';
-        if (s.status === 'connected') {
-          notify.ok('已登录：' + (s.nickname || s.label || '平台账号'));
-          stopQrTimer();
-          qrDlg.value = false;
-          await loadWorkspace();
-        } else if (s.status === 'expired') {
-          notify.warn('二维码已过期，请重新发起扫码登录');
-          stopQrTimer();
-        }
-      } catch (e) { /* 轮询失败静默，等下一轮 */ }
-    }
-
-    async function wsRefresh(a) {
-      try { await phase2Api.wsRefresh(a.id); notify.ok('会话已续期'); await loadWorkspace(); }
-      catch (e) { notify.err(errorMessage(e)); }
-    }
-
-    async function wsLogout(a) {
-      try { await phase2Api.wsLogout(a.id); notify.info('已登出'); await loadWorkspace(); }
-      catch (e) { notify.err(errorMessage(e)); }
     }
 
     async function jobRun(j) {
@@ -457,7 +376,7 @@ export default {
       await loadMaterials();
       loadWorkspace();
     });
-    onUnmounted(() => { if (timer) window.clearInterval(timer); stopQrTimer(); });
+    onUnmounted(() => { if (timer) window.clearInterval(timer); });
 
     const pendingCount = computed(() => items.value.filter((i) => i.confirm_status === 'pending').length);
 
@@ -472,10 +391,8 @@ export default {
       onDragStart, onDragEnd, onDragOver, onDragOut, onDrop, onPick,
       switchChannel, copyComposer, openBackend, markPublished, useTextOnly, gotoMaterials,
       channelName,
-      wsAccounts, wsJobs, wsLoading, wsError, wsAddDlg, wsAddForm, qrDlg, qrAcc, qrUrl,
-      loadWorkspace, openWsAdd, saveWsAccount, startQrLogin, stopQrTimer,
-      wsRefresh, wsLogout, jobRun, jobConfirm, jobCancel,
-      pfNameOf, wsStatusName, jobStatusName, jobStatusTag, isAdmin,
+      wsJobs, wsLoading, wsError, loadWorkspace, jobRun, jobConfirm, jobCancel,
+      jobStatusName, jobStatusTag, isAdmin,
     };
   },
   template: `
@@ -650,42 +567,15 @@ export default {
         </div>
       </div>
 
-      <div class="card">
-        <div class="row" style="justify-content:space-between">
-          <b>平台工作空间（二期 · 扫码登录 / 沙盒发布）</b>
-          <div class="row">
-            <el-button v-if="isAdmin" size="small" type="primary" @click="openWsAdd">+ 添加账号</el-button>
-            <el-button size="small" @click="loadWorkspace" :loading="wsLoading">刷新</el-button>
-          </div>
-        </div>
-        <div class="muted mt6">扫码登录后，账号会话加密保存在系统内，可用于沙盒模拟发布与授权评论任务；会话过期前会提示续期。</div>
-        <div v-if="wsError" class="alert-strip warn mt10">{{ wsError }}（未配置外部扫码服务时无法登录，属预期）</div>
-        <div v-if="!wsAccounts.length && !wsLoading" class="state-box mt10">
-          还没有平台账号。管理员点击「+ 添加账号」选择平台后，用手机扫码登录。
-        </div>
-        <div v-for="a in wsAccounts" :key="a.id" class="row mt10" style="justify-content:space-between;border-top:1px dashed #ebeef5;padding-top:8px">
-          <div class="row">
-            <span class="pf">{{ pfNameOf(a.platform_id) }}</span>
-            <b>{{ a.label }}</b>
-            <span v-if="a.nickname" class="muted">{{ a.nickname }}</span>
-            <el-tag size="small" :type="a.status === 'connected' ? 'success' : (a.status === 'awaiting_scan' ? 'warning' : 'info')">
-              {{ wsStatusName(a.status) }}
-            </el-tag>
-            <el-tag v-if="a.status === 'connected' && a.expires_soon" size="small" type="warning">即将过期</el-tag>
-          </div>
-          <div class="row">
-            <el-button size="small" type="primary" text @click="startQrLogin(a)">扫码登录</el-button>
-            <el-button v-if="a.status === 'connected'" size="small" text @click="wsRefresh(a)">续期</el-button>
-            <el-button v-if="a.status === 'connected'" size="small" text type="danger" @click="wsLogout(a)">登出</el-button>
-          </div>
-        </div>
-      </div>
+      <platform-accounts />
 
-      <div class="card" v-if="wsJobs.length">
+      <div class="card" v-if="wsJobs.length || wsError">
         <div class="row" style="justify-content:space-between">
           <b>沙盒发布任务</b>
-          <span class="muted">预览 → 人工确认 → 发布 → 截图存证</span>
+          <el-button size="small" :loading="wsLoading" @click="loadWorkspace">刷新任务</el-button>
         </div>
+        <div class="muted mt6">预览 → 人工确认 → 发布 → 截图存证</div>
+        <div v-if="wsError" class="alert-strip warn mt10" role="alert">{{ wsError }}</div>
         <div v-for="j in wsJobs.slice(0, 8)" :key="j.id" class="row mt10" style="justify-content:space-between;border-top:1px dashed #ebeef5;padding-top:8px">
           <div class="row">
             <el-tag size="small" :type="jobStatusTag(j.status)">{{ jobStatusName(j.status) }}</el-tag>
@@ -722,34 +612,6 @@ export default {
     </div>
   </div>
 
-  <el-dialog v-model="wsAddDlg" title="添加平台账号" width="440px">
-    <el-form label-width="90px">
-      <el-form-item label="平台">
-        <el-select v-model="wsAddForm.platform_id" style="width:100%" placeholder="选择平台">
-          <el-option v-for="p in wsPlatforms" :key="p.id" :label="p.name + '（' + p.code + '）'" :value="p.id"></el-option>
-        </el-select>
-      </el-form-item>
-      <el-form-item label="账号名称"><el-input v-model="wsAddForm.label" placeholder="如 抖音-主号"></el-input></el-form-item>
-    </el-form>
-    <template #footer>
-      <el-button @click="wsAddDlg = false">取消</el-button>
-      <el-button type="primary" @click="saveWsAccount">创建并扫码登录</el-button>
-    </template>
-  </el-dialog>
-
-  <el-dialog v-model="qrDlg" title="扫码登录" width="360px" :close-on-click-modal="false">
-    <div style="text-align:center">
-      <img v-if="qrUrl" :src="qrUrl" style="width:240px;height:240px;border:1px solid #ebeef5;border-radius:8px" />
-      <div v-else class="state-box">二维码生成中，请稍候…</div>
-      <div class="muted mt10">
-        使用 {{ qrAcc ? pfNameOf(qrAcc.platform_id) : '' }} 手机端扫码；
-        {{ qrAcc ? '登录账号：' + qrAcc.label : '' }}，扫码成功后本窗口自动关闭。
-      </div>
-    </div>
-    <template #footer>
-      <el-button @click="qrDlg = false; stopQrTimer()">关闭</el-button>
-    </template>
-  </el-dialog>
 </template>
 `,
 };

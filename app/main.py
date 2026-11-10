@@ -20,7 +20,7 @@ async def lifespan(app):
     # 严禁 create_all 吞掉迁移问题；空库由独立 migration 命令初始化。
     with engine.connect() as conn:
         revision = conn.execute(text('SELECT version_num FROM alembic_version')).scalar()
-        if revision != '0003_phase2':
+        if revision != '0004_login_catalog':
             raise RuntimeError('数据库迁移未完成，请先执行 alembic upgrade head')
     if config.SCHEDULER_ENABLED:
         from .scheduler import start_scheduler
