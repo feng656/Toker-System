@@ -271,6 +271,8 @@ class Platform(Record, Base):
     default_time: Mapped[str] = mapped_column(String(100), default='18:00-20:00')
     style_prompt: Mapped[str] = mapped_column(Text, default='')
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    generation_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    login_url: Mapped[str] = mapped_column(String(700), default='')
 
 
 class LoginBucket(Record, Base):
@@ -343,6 +345,8 @@ class WorkspaceAccount(Record, Base):
     __tablename__ = 'workspace_accounts'
     platform_id: Mapped[int] = mapped_column(ForeignKey('platforms.id'), index=True)
     label: Mapped[str] = mapped_column(String(100))
+    login_hint: Mapped[str] = mapped_column(String(200), default='')
+    request_key: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
     nickname: Mapped[str] = mapped_column(String(100), default='')
     avatar_url: Mapped[str] = mapped_column(String(700), default='')
     status: Mapped[str] = mapped_column(String(30), default='disconnected', index=True)

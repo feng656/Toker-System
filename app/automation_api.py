@@ -4,13 +4,42 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from .api import operate, admin, row, as_dict
 from .db import get_db, utcnow
-from .models import (WorkspaceAccount, WorkspaceJob, ContentVariant, CommentTask, CommentAction,
+from .models import (Platform, WorkspaceAccount, WorkspaceJob, ContentVariant, CommentTask, CommentAction,
                      ReplyTemplate, DMPolicy, DMMessage, AIProvider, AutomationEvent)
-from .phase2_schemas import AccountIn, AccountLoginIn, PublishJobIn, CommentTaskIn, DiscoverIn, ReplyTemplateIn, DMPolicyIn, DMIn
+from .phase2_schemas import AccountIn, AccountLoginIn, LoginPlatformIn, PublishJobIn, CommentTaskIn, DiscoverIn, ReplyTemplateIn, DMPolicyIn, DMIn
 from . import workspace, engagement, storage
 from .tasks import lock
 
 api = APIRouter()
+
+
+@api.get('/workspace/platforms', tags=['工作空间'])
+def login_platforms(db:Session=Depends(get_db),_=Depends(operate)):
+    from .login_catalog import catalog
+    return catalog(db)
+
+
+@api.post('/workspace/platforms', status_code=201, tags=['工作空间'])
+def add_login_platform(body:LoginPlatformIn,db:Session=Depends(get_db),actor=Depends(admin)):
+    import hashlib
+    from .login_catalog import CATALOG_CODES, catalog
+    code = body.code or 'custom_' + hashlib.sha256(body.request_key.encode()).hexdigest()[:24]
+    lock(db, 'login-platforms:create')
+    if code == 'moments':
+        raise HTTPException(409, '朋友圈没有独立网页版扫码入口，请使用微信客户端')
+    existing = db.scalar(select(Platform).where(Platform.code == code).execution_options(include_deleted=True))
+    if existing:
+        if not existing.deleted_at and existing.name == body.name and existing.login_url == body.login_url and existing.category == body.category:
+            return next(p for p in catalog(db) if p['id'] == existing.id)
+        raise HTTPException(409, '平台标识已存在，请选择已有平台或更换标识')
+    if code in CATALOG_CODES or db.scalar(select(Platform.id).where(func.lower(Platform.name) == body.name.casefold())):
+        raise HTTPException(409, '同名平台已存在，请从列表中选择')
+    platform = Platform(code=code,name=body.name,category=body.category,login_url=body.login_url,
+                        enabled=True,generation_enabled=False,publish_mode='manual')
+    db.add(platform);db.flush()
+    workspace.event(db,'platform',platform.id,'created_for_login',actor.id)
+    db.commit()
+    return next(p for p in catalog(db) if p['id'] == platform.id)
 
 
 @api.get('/workspace/accounts', tags=['工作空间'])
@@ -22,6 +51,13 @@ def accounts(db:Session=Depends(get_db),_=Depends(operate)):
 def account(body:AccountIn,db:Session=Depends(get_db),_=Depends(admin)):
     from .platforms import resolve
     resolve(db,platform_id=body.platform_id,enabled=True)
+    if body.request_key:
+        lock(db, 'account-create:' + body.request_key)
+        existing = db.scalar(select(WorkspaceAccount).where(WorkspaceAccount.request_key == body.request_key))
+        if existing:
+            if any(getattr(existing,k) != getattr(body,k) for k in ('platform_id','label','login_hint')):
+                raise HTTPException(409, '创建请求已用于另一个账号，请刷新后重试')
+            return workspace.public_account(existing)
     a=WorkspaceAccount(**body.model_dump());db.add(a);db.commit();return workspace.public_account(a)
 
 
@@ -43,7 +79,11 @@ def logout(aid:int,db:Session=Depends(get_db),actor=Depends(operate)):
 @api.get('/workspace/accounts/{aid}/session', tags=['工作空间'])
 def session(aid:int,db:Session=Depends(get_db),_=Depends(operate)):
     a=row(db,WorkspaceAccount,aid);result=workspace.public_account(a)
-    if result['qr_available']:result['qr_url']=storage.signed_url(a.qr_object_ref)
+    if result['qr_available']:
+        try:
+            result['qr_url']=storage.signed_url(a.qr_object_ref)
+        except Exception:
+            raise HTTPException(503, '无法获取二维码图片地址，请检查私有对象存储配置')
     return result
 
 
