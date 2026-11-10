@@ -35,6 +35,7 @@ OUTBOX_MAX_ATTEMPTS = int(os.getenv('OUTBOX_MAX_ATTEMPTS', '5'))
 BROWSER_ENABLED = os.getenv('BROWSER_ENABLED', 'false').lower() == 'true'
 BROWSER_ADAPTER_URL = os.getenv('BROWSER_ADAPTER_URL', '')
 BROWSER_ADAPTER_TOKEN = os.getenv('BROWSER_ADAPTER_TOKEN', '')
+BROWSER_LOGIN_PLATFORMS = [x.strip() for x in os.getenv('BROWSER_LOGIN_PLATFORMS', '').split(',') if x.strip()]
 OFFICIAL_PUBLISH_ENABLED = os.getenv('OFFICIAL_PUBLISH_ENABLED', 'false').lower() == 'true'
 AUTO_REGISTER_MODE = os.getenv('AUTO_REGISTER_MODE', 'off')
 REGISTER_INVITE_CODE = os.getenv('REGISTER_INVITE_CODE', '')

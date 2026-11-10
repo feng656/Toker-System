@@ -22,10 +22,17 @@
         <el-form-item label="密码">
           <el-input v-model="loginForm.password" type="password" show-password placeholder="请输入密码" autocomplete="current-password" @keyup.enter="doLogin"></el-input>
         </el-form-item>
+        <el-form-item v-if="loginPolicy && loginPolicy.auto_register_mode === 'invite'" label="邀请码">
+          <el-input v-model="loginForm.invite_code" placeholder="新账号自动注册需填写邀请码" @keyup.enter="doLogin"></el-input>
+        </el-form-item>
         <el-alert v-if="loginError" :title="loginError" type="error" :closable="false" show-icon style="margin-bottom:12px"></el-alert>
         <el-button type="primary" style="width:100%" :loading="loginLoading" @click="doLogin">登录</el-button>
       </el-form>
-      <div class="login-foot">登录后按角色进入对应工作台；账号由管理员在「设置与帮助 · 用户管理」中创建。</div>
+      <div class="login-foot">
+        <template v-if="loginPolicy && loginPolicy.auto_register_mode === 'invite'">新账号凭邀请码登录即自动注册（销售角色）；已有账号正常登录。</template>
+        <template v-else-if="loginPolicy && loginPolicy.auto_register_mode === 'off'">账号由管理员在「设置 · 用户管理」中创建；连续输错将触发挑战验证，频率过高会限流。</template>
+        <template v-else>登录后按角色进入对应工作台；账号由管理员在「设置与帮助 · 用户管理」中创建。</template>
+      </div>
     </div>
   </div>
 

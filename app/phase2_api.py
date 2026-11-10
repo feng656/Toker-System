@@ -44,14 +44,14 @@ def platforms(enabled: bool | None = None, db: Session = Depends(get_db), _=Depe
 
 @api.post('/platforms', status_code=201, tags=['二期平台'])
 def add_platform(body: PlatformIn, db: Session = Depends(get_db), _=Depends(admin)):
-    p=Platform(**body.model_dump(exclude={'expected_version'}));db.add(p);db.commit();return as_dict(p)
+    p=Platform(**body.model_dump(exclude={'expected_version'}, exclude_none=True));db.add(p);db.commit();return as_dict(p)
 
 
 @api.put('/platforms/{pid}', tags=['二期平台'])
 def edit_platform(pid: int, body: PlatformIn, db: Session = Depends(get_db), _=Depends(admin)):
     p=row(db,Platform,pid,body.expected_version)
     if p.code != body.code:raise HTTPException(409,'平台code稳定不可改名；请停用后另建')
-    for k,v in body.model_dump(exclude={'expected_version'}).items():setattr(p,k,v)
+    for k,v in body.model_dump(exclude={'expected_version'}, exclude_none=True).items():setattr(p,k,v)
     db.commit();return as_dict(p)
 
 

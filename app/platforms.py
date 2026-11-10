@@ -32,4 +32,4 @@ def resolve(db, code=None, platform_id=None, enabled=False):
 
 
 def active(db):
-    return db.scalars(select(Platform).where(Platform.enabled.is_(True)).order_by(Platform.id)).all()
+    return db.scalars(select(Platform).where(Platform.enabled.is_(True), Platform.generation_enabled.is_(True)).order_by(Platform.id)).all()

@@ -13,6 +13,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from '../core/vue.js';
 import { contentApi } from '../api/content.js';
 import { platformApi } from '../api/platform.js';
+import { phase2Api } from '../api/phase2.js';
 import { dashboardApi } from '../api/business.js';
 import { materialApi } from '../api/library.js';
 import { notify, errorMessage } from '../core/ui.js';
@@ -22,11 +23,14 @@ import {
 import {
   CHANNELS, CHANNEL_MAP, channelName, emptyDrafts, fillDraft, buildCopy,
 } from '../core/platforms.js';
+import { isAdmin } from '../core/store.js';
+import PlatformAccounts from '../components/platform-accounts.js';
 
 const EP = () => window.ElementPlus;
 
 export default {
   name: 'PageWork',
+  components: { PlatformAccounts },
   setup() {
     /* ---------------- 内容池 ---------------- */
     const items = ref([]);
@@ -106,6 +110,41 @@ export default {
     });
 
     const materialEmpty = computed(() => coverage.value.total === 0);
+
+    /* ---------------- 二期：平台工作空间（R2/R6 扫码登录 + 沙盒发布） ---------------- */
+    const wsJobs = ref([]);
+    const wsLoading = ref(false);
+    const wsError = ref('');
+    const jobStatusName = (s) => ({ queued: '排队中', running: '执行中', awaiting_confirmation: '待人工确认', succeeded: '已发布', failed: '失败', cancelled: '已取消' }[s] || s);
+    const jobStatusTag = (s) => ({ queued: 'info', running: 'primary', awaiting_confirmation: 'warning', succeeded: 'success', failed: 'danger', cancelled: 'info' }[s] || 'info');
+
+    async function loadWorkspace() {
+      wsLoading.value = true;
+      wsError.value = '';
+      try {
+        const ov = await phase2Api.wsOverview();
+        wsJobs.value = ov.jobs || [];
+      } catch (e) {
+        wsError.value = errorMessage(e);
+      } finally {
+        wsLoading.value = false;
+      }
+    }
+
+    async function jobRun(j) {
+      try { await phase2Api.publishJobRun(j.id); notify.ok('任务已提交沙盒执行'); await loadWorkspace(); }
+      catch (e) { notify.err(errorMessage(e)); }
+    }
+
+    async function jobConfirm(j) {
+      try { await phase2Api.publishJobConfirm(j.id); notify.ok('已确认，继续发布流程'); await loadWorkspace(); }
+      catch (e) { notify.err(errorMessage(e)); }
+    }
+
+    async function jobCancel(j) {
+      try { await phase2Api.publishJobCancel(j.id); notify.info('任务已取消'); await loadWorkspace(); }
+      catch (e) { notify.err(errorMessage(e)); }
+    }
 
     /* ---------------- 平台登录（浏览器代理，沿用原工作台能力） ---------------- */
     async function openBrowser() {
@@ -335,10 +374,7 @@ export default {
     onMounted(async () => {
       await loadAll();
       await loadMaterials();
-      openBrowser();
-      timer = window.setInterval(() => {
-        if (!brLogged.value && brImg.value) refreshShot();
-      }, 4000);
+      loadWorkspace();
     });
     onUnmounted(() => { if (timer) window.clearInterval(timer); });
 
@@ -355,6 +391,8 @@ export default {
       onDragStart, onDragEnd, onDragOver, onDragOut, onDrop, onPick,
       switchChannel, copyComposer, openBackend, markPublished, useTextOnly, gotoMaterials,
       channelName,
+      wsJobs, wsLoading, wsError, loadWorkspace, jobRun, jobConfirm, jobCancel,
+      jobStatusName, jobStatusTag, isAdmin,
     };
   },
   template: `
@@ -529,30 +567,26 @@ export default {
         </div>
       </div>
 
-      <div class="card">
+      <platform-accounts />
+
+      <div class="card" v-if="wsJobs.length || wsError">
         <div class="row" style="justify-content:space-between">
-          <b>平台登录</b>
-          <span class="muted">扫码一次，长期有效</span>
+          <b>沙盒发布任务</b>
+          <el-button size="small" :loading="wsLoading" @click="loadWorkspace">刷新任务</el-button>
         </div>
-        <el-radio-group v-model="selPlatform" style="width:100%;display:flex;gap:6px;margin:12px 0" @change="openBrowser">
-          <el-radio-button value="gzh" style="flex:1">公众号</el-radio-button>
-          <el-radio-button value="douyin" style="flex:1">抖音</el-radio-button>
-          <el-radio-button value="shipinhao" style="flex:1">视频号</el-radio-button>
-          <el-radio-button value="xhs" style="flex:1">小红书</el-radio-button>
-        </el-radio-group>
-        <div style="position:relative;min-height:220px;background:#fafbfc;border:1px solid #ebeef5;border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden">
-          <img v-if="brImg" :src="'data:image/png;base64,' + brImg" style="width:100%;display:block" />
-          <div v-if="brLoading" style="color:#909399;font-size:13px">加载中…</div>
-          <div v-if="brError" style="color:#f56c6c;font-size:13px;padding:16px;text-align:center">{{ brError }}</div>
-          <div v-if="!brImg && !brLoading && !brError" style="color:#c0c4cc;font-size:13px">点击上方平台标签打开后台窗口</div>
-          <div v-if="brLogged" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.7)">
-            <span style="background:#67c23a;color:#fff;padding:8px 20px;border-radius:20px;font-size:14px;font-weight:600">✓ 已登录，可直接发布</span>
+        <div class="muted mt6">预览 → 人工确认 → 发布 → 截图存证</div>
+        <div v-if="wsError" class="alert-strip warn mt10" role="alert">{{ wsError }}</div>
+        <div v-for="j in wsJobs.slice(0, 8)" :key="j.id" class="row mt10" style="justify-content:space-between;border-top:1px dashed #ebeef5;padding-top:8px">
+          <div class="row">
+            <el-tag size="small" :type="jobStatusTag(j.status)">{{ jobStatusName(j.status) }}</el-tag>
+            <span class="muted">任务 #{{ j.id }} · 内容版本 {{ j.variant_id }}</span>
+            <span v-if="j.error" class="muted tiny">（{{ j.error }}）</span>
           </div>
-        </div>
-        <div class="row mt10" style="justify-content:space-between">
-          <el-tag v-if="!brLogged" size="small" type="warning">未登录，请用微信扫码</el-tag>
-          <el-tag v-else size="small" type="success">已登录</el-tag>
-          <el-button size="small" text type="primary" @click="openBrowser">刷新画面</el-button>
+          <div class="row">
+            <el-button v-if="j.status === 'queued'" size="small" text type="primary" @click="jobRun(j)">执行</el-button>
+            <el-button v-if="j.status === 'awaiting_confirmation'" size="small" text type="success" @click="jobConfirm(j)">确认继续</el-button>
+            <el-button v-if="['queued','failed','awaiting_confirmation'].indexOf(j.status) >= 0" size="small" text type="danger" @click="jobCancel(j)">取消</el-button>
+          </div>
         </div>
       </div>
 
@@ -577,6 +611,7 @@ export default {
       </div>
     </div>
   </div>
+
 </template>
 `,
 };
