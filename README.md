@@ -1,5 +1,9 @@
 # 自由光 · 拓客系统
 
+> **平台账号登录增量 v3**：工作台支持15个常见平台、填写账号后请求二维码、自定义平台保存、扫码状态有界查询及过期重取。先升级数据库到 `0004_login_catalog`，详见[使用/升级/验收说明](docs/PLATFORM_LOGIN_V3.md)。后端94项×两套环境及轮询6项通过；真实扫码仍需要已授权平台适配服务，预置平台不等于已接通。该增量基于二期前端PR #4，未改动其源分支。
+
+> **二期后端联调版**：动态平台、批量审核、素材/视频任务、工作空间、授权互动和登录安全已增量实现。先看[二期升级指南](docs/PHASE2_DEPLOYMENT.md)、[接口契约](docs/PHASE2_API_CONTRACT.md)、[适配协议](docs/PHASE2_ADAPTERS.md)和[73项测试报告](docs/PHASE2_TEST_REPORT.md)。真实平台服务与账号、AI key、Gitee授权仍待联调，不宣称已可生产上线。
+
 AI 内容工厂 + 半自动多平台发布 + 评论线索挖掘。前端为**零构建 Vue 3（全局构建）+ ElementPlus** 单页应用，后端为 FastAPI + SQLAlchemy 2 + PostgreSQL/MinIO。
 
 > **协作入口**：主仓 [github.com/feng656/Toker-System](https://github.com/feng656/Toker-System)。
@@ -32,11 +36,11 @@ cp .env.example .env          # 填写 DATABASE_URL / JWT_SECRET / MINIO_*
 - `docs/DEPLOYMENT.md`、`docs/API_CONTRACT.md`、`docs/COLLABORATION.md`：部署、接口契约、双人协作规则
 - `scripts/`：种子、PPT 素材导入、端到端演示
 
-## 当前状态（2026-11-09）
+## 当前状态（2026-11-11）
 
-- 前端 Phase 1 已完成 R4 内容管理、R8 导航合并、R10 登录安全、R5 README 复核的可做部分；详见 [Phase 1 执行报告](docs/phase2/01-Phase1-总览与出口检查.md)。
-- 批量审核/版本切换、草稿箱、登录限流/验证码、平台动态配置、沙盒、评论/私信、AI Provider 等后端接口仍待浆果实现；前端不以假数据冒充联调，缺口与阻塞见 [二期接口缺口与待确认清单](docs/phase2/02-接口缺口与待确认清单.md)。
-- R5 的 Gitee 镜像/多网络验收、R2/R6/R7 的真实平台账号仍依赖用户提供资源。
+- 后端 `v2.0.0` 已合并二期后端（PR #3）与平台登录增强（PR #5），迁移到 `0004_login_catalog`；前端已合并二期前端（PR #4）。
+- 内容管理同时保留「内容包（按选题）」与「版本筛选与批量审核（二期）」两个视图；平台 AI 文案与视频生成入口保留在设置页和版本编辑区。
+- 真实平台账号、Gitee 镜像/多网络验收、评论/私信的真实平台适配仍依赖用户提供资源，未配置时明确失败而不伪造成功。
 
 ## 外部依赖
 

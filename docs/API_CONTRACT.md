@@ -1,5 +1,7 @@
 # 一期后端接口与联调约定
 
+> 二期新增契约见 [PHASE2_API_CONTRACT.md](PHASE2_API_CONTRACT.md)。原接口继续保留，扩展字段向后兼容。
+
 规范前缀 `/api/v1`；机器规范见 `openapi-3.1.json`，运行时 `/openapi.json`。Bearer登录令牌；业务验证错误422，未登录401、无权403、不可见404、状态/唯一键/乐观锁冲突409、依赖不可用503。HTTP错误保留detail并附code；Pydantic字段错误用标准detail数组。
 
 ## 通用数据

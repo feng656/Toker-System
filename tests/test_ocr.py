@@ -55,7 +55,10 @@ def test_comment_ocr_creates_interaction_and_lead_after_confirmation(client, hea
     assert len(response.json()['result']['interaction_ids']) == 1
     leads = client.get('/api/v1/leads', headers=headers).json()
     assert len(leads) == 1 and leads[0]['intent'] == 'high'
-    assert 'phone:13800138000' in leads[0]['contact_keys']
+    assert 'contact_keys' not in leads[0]  # 列表不泄露可逆去重键。
+    assert '138****8000' in leads[0]['contact_info']
+    detail = client.get(f'/api/v1/leads/{leads[0]["id"]}', headers=headers).json()
+    assert 'phone:13800138000' in detail['contact_keys']
     assert len(client.get('/api/v1/outbox', headers=headers).json()) == 2
 
 

@@ -56,10 +56,9 @@ async def fill_variant(db, v):
         v.publish_result = result
         if not result.get('ok'):
             raise ValueError('适配服务填稿失败')
-        if result.get('published') and result.get('url'):
-            record_publication(db, v, result['url'])
-        else:
-            v.publish_status = 'filled'
+        if result.get('published'):
+            raise ValueError('旧填稿适配不能跳过人工确认；请用workspace发布任务')
+        v.publish_status = 'filled'
         db.commit()
         return {'variant_id': v.id, 'publish_status': v.publish_status, 'result': result}
     except Exception as exc:

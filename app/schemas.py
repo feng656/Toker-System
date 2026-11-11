@@ -4,7 +4,8 @@ from typing import Literal
 from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-Platform = Literal['douyin', 'shipinhao', 'gzh', 'moments', 'xhs']
+from typing import Annotated
+Platform = Annotated[str, Field(min_length=1, max_length=40, pattern=r'^[a-z][a-z0-9_-]*$')]
 Role = Literal['admin', 'operator', 'sales']
 LeadStatus = Literal['new', 'contacted', 'opportunity', 'won', 'lost', 'invalid']
 
@@ -43,6 +44,9 @@ class Input(BaseModel):
 class LoginIn(Input):
     username: str = Field(min_length=1, max_length=50)
     password: str = Field(min_length=1, max_length=72)
+    invite_code: str | None = Field(default=None, max_length=200)
+    challenge_id: str | None = Field(default=None, max_length=64)
+    challenge_solution: str | None = Field(default=None, max_length=100)
 
 
 class PasswordIn(Input):

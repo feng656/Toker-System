@@ -15,6 +15,7 @@ import { notify, errorMessage, errorInfo } from './core/ui.js';
 import { authApi } from './api/auth.js';
 import { contentApi } from './api/content.js';
 import { platformApi } from './api/platform.js';
+import { phase2Api } from './api/phase2.js';
 import { roleName } from './core/format.js';
 
 import PageWork from './pages/work.js';
@@ -45,54 +46,10 @@ function hashOf(page, tab) {
 
 const app = createApp({
   setup() {
-    /* ---------------- 登录 ---------------- */
-    const loginForm = reactive({ username: '', password: '', challenge_answer: '' });
+    const loginForm = reactive({ username: '', password: '', invite_code: '' });
     const loginError = ref('');
     const loginLoading = ref(false);
-    const retryLeft = ref(0);
-    const challenge = ref(null);
-    let retryTimer = null;
-
-    /* ---------------- 注册 ---------------- */
-    const registerMode = ref(false);
-    const regForm = reactive({ username: '', password: '', confirm: '', invite_code: '', name: '' });
-    const regLoading = ref(false);
-    const regError = ref('');
-    const regNotice = ref('');
-    const regRetryLeft = ref(0);
-    let regRetryTimer = null;
-    const regConfig = reactive({
-      enabled: false,
-      invite_required: true,
-      default_role: 'sales',
-      approval_required: true,
-      checked: false,
-      reason: '当前未开放自主注册，请联系管理员开通。',
-    });
-
-    const passwordStrength = computed(() => {
-      const p = regForm.password || '';
-      let score = 0;
-      if (p.length >= 8) score += 1;
-      if (/[A-Za-z]/.test(p) && /\d/.test(p)) score += 1;
-      if (p.length >= 12 || /[^A-Za-z0-9]/.test(p)) score += 1;
-      const labels = ['太弱', '较弱', '可用', '较强'];
-      return {
-        score,
-        label: labels[score] || '太弱',
-        ok: p.length >= 8 && /[A-Za-z]/.test(p) && /\d/.test(p) && p !== regForm.username,
-      };
-    });
-
-    const canSubmitRegister = computed(() => (
-      regConfig.enabled
-      && !regLoading.value
-      && regRetryLeft.value === 0
-      && regForm.username.trim().length >= 2
-      && passwordStrength.value.ok
-      && regForm.password === regForm.confirm
-      && (!regConfig.invite_required || regForm.invite_code.trim().length > 0)
-    ));
+    const loginPolicy = ref(null);
 
     /* ---------------- 路由 ---------------- */
     const route = ref(defaultRoute());
@@ -218,220 +175,87 @@ const app = createApp({
       routeTab.value = target;
     }
 
-    /* ---------------- 登录逻辑 ---------------- */
-    function stopRetry() {
-      if (retryTimer) window.clearInterval(retryTimer);
-      retryTimer = null;
-      retryLeft.value = 0;
+    /* ---------------- 登录（含二期 PoW 挑战与自动注册策略） ---------------- */
+    async function sha256Hex(s) {
+      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+      return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
     }
 
-    function startRetry(seconds) {
-      stopRetry();
-      const total = Math.max(1, Math.ceil(Number(seconds) || 30));
-      retryLeft.value = total;
-      retryTimer = window.setInterval(() => {
-        retryLeft.value = Math.max(0, retryLeft.value - 1);
-        if (retryLeft.value === 0) stopRetry();
-      }, 1000);
-    }
-
-    function stopRegRetry() {
-      if (regRetryTimer) window.clearInterval(regRetryTimer);
-      regRetryTimer = null;
-      regRetryLeft.value = 0;
-    }
-
-    function startRegRetry(seconds) {
-      stopRegRetry();
-      const total = Math.max(1, Math.ceil(Number(seconds) || 30));
-      regRetryLeft.value = total;
-      regRetryTimer = window.setInterval(() => {
-        regRetryLeft.value = Math.max(0, regRetryLeft.value - 1);
-        if (regRetryLeft.value === 0) stopRegRetry();
-      }, 1000);
-    }
-
-    function applyChallenge(e) {
-      if (e && e.challenge && typeof e.challenge === 'object') {
-        challenge.value = { ...e.challenge };
-        loginForm.challenge_answer = '';
+    /** 解出 sha256(nonce+solution) 以 difficulty 个 0 开头的 solution */
+    async function solveChallenge(nonce, difficulty) {
+      const prefix = '0'.repeat(difficulty || 3);
+      for (let i = 0; i < 1000000; i += 1) {
+        const h = await sha256Hex(nonce + String(i));
+        if (h.startsWith(prefix)) return String(i);
       }
+      return null;
     }
 
-    function handleLoginError(e) {
-      const info = errorInfo(e);
-      if (e instanceof ApiError) {
-        if (e.status === 429) {
-          applyChallenge(e);
-          if (e.retryAfter) startRetry(e.retryAfter);
-          loginError.value = challenge.value
-            ? `${info.text}，请完成安全验证后重试`
-            : info.text;
-          return;
-        }
-        if (e.status === 401) {
-          loginError.value = '账号或密码错误';
-          return;
-        }
-        if (e.status === 403) {
-          loginError.value = '账号已被停用，请联系管理员';
-          return;
-        }
-        if (e.status === 404) {
-          loginError.value = '登录接口不可用，请确认前后端版本一致';
-          return;
-        }
-      }
-      loginError.value = info.text || '登录失败，请稍后重试';
+    async function attemptLogin(payload) {
+      const res = await window.fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      let d = null;
+      try { d = await res.json(); } catch (e) { d = null; }
+      return { res, d };
     }
 
     async function doLogin() {
       loginError.value = '';
-      if (retryLeft.value > 0) return;
       if (!loginForm.username.trim() || !loginForm.password) {
         loginError.value = '请输入账号与密码';
         return;
       }
       loginLoading.value = true;
       try {
-        const extra = {};
-        if (challenge.value && challenge.value.token) {
-          extra.challenge_token = challenge.value.token;
-          extra.challenge_answer = loginForm.challenge_answer;
+        const payload = { username: loginForm.username.trim(), password: loginForm.password };
+        if (loginForm.invite_code.trim()) payload.invite_code = loginForm.invite_code.trim();
+        let { res, d } = await attemptLogin(payload);
+        // 428：失败次数达到阈值，自动完成工作量证明挑战后重试一次
+        if (res.status === 428 && d && d.detail && d.detail.challenge_url) {
+          const ch = await window.fetch(d.detail.challenge_url, { method: 'POST' })
+            .then((r) => r.json()).catch(() => null);
+          if (ch && ch.nonce) {
+            const solution = await solveChallenge(ch.nonce, ch.difficulty);
+            if (solution != null) {
+              payload.challenge_id = ch.challenge_id;
+              payload.challenge_solution = solution;
+              ({ res, d } = await attemptLogin(payload));
+            }
+          }
         }
-        const d = await authApi.login(loginForm.username.trim(), loginForm.password, extra);
         if (d && d.token) {
           setSession(d.token, d.user || {});
           loginForm.password = '';
-          loginForm.challenge_answer = '';
-          challenge.value = null;
-          registerMode.value = false;
-          stopRetry();
-          navigate(defaultRoute(), '', true);
+          loginForm.invite_code = '';
+          navigate(defaultRoute(), true);
           await afterLogin();
+        } else if (res.status === 429) {
+          const ra = res.headers.get('Retry-After');
+          loginError.value = `尝试过于频繁，已被限流${ra ? `，请 ${ra} 秒后重试` : '，请稍后重试'}。`;
+        } else if (d && d.detail && typeof d.detail === 'object') {
+          loginError.value = d.detail.message || d.detail.detail || '登录失败';
         } else {
           loginError.value = '登录失败：服务返回缺少令牌';
         }
       } catch (e) {
-        handleLoginError(e);
+        loginError.value = '无法连接后端服务，请确认服务已启动';
       } finally {
         loginLoading.value = false;
       }
+    }
+
+    /** 读取登录策略（自动注册模式），登录页按模式显示邀请码输入 */
+    async function loadLoginPolicy() {
+      try { loginPolicy.value = await phase2Api.authPolicy(); } catch (e) { loginPolicy.value = null; }
     }
 
     function logout() {
       clearSession();
       counters.pending = 0;
       routeError.value = null;
-      stopRetry();
-    }
-
-    /* ---------------- 注册逻辑 ---------------- */
-    async function loadRegisterConfig() {
-      try {
-        const cfg = await authApi.registerConfig();
-        regConfig.enabled = !!cfg.enabled;
-        regConfig.invite_required = cfg.invite_required !== false;
-        regConfig.default_role = cfg.default_role || 'sales';
-        regConfig.approval_required = cfg.approval_required !== false;
-        regConfig.reason = cfg.reason || '';
-        regConfig.checked = true;
-      } catch (e) {
-        regConfig.enabled = false;
-        regConfig.checked = true;
-        if (!(e instanceof ApiError) || (e.status !== 404 && e.status !== 405)) {
-          regConfig.reason = '注册配置加载失败，当前按「未开放」处理；请联系管理员。';
-        }
-      }
-    }
-
-    function openRegister() {
-      registerMode.value = true;
-      regError.value = '';
-      regNotice.value = '';
-      if (!regConfig.checked) loadRegisterConfig();
-    }
-
-    function backToLogin() {
-      registerMode.value = false;
-      regError.value = '';
-      regNotice.value = '';
-    }
-
-    function handleRegisterError(e) {
-      const info = errorInfo(e);
-      if (e instanceof ApiError) {
-        if (e.status === 429) {
-          if (e.retryAfter) startRegRetry(e.retryAfter);
-          regError.value = info.text;
-          return;
-        }
-        if (e.status === 403) {
-          regError.value = '邀请码无效或已过期，请联系管理员';
-          return;
-        }
-        if (e.status === 409) {
-          regError.value = '账号已存在，请直接登录或更换账号';
-          return;
-        }
-        if (e.status === 422) {
-          regError.value = e.detail || '注册信息有误，请检查后重试';
-          return;
-        }
-        if (e.status === 404) {
-          regError.value = '自主注册未开放，请联系管理员开通。';
-          return;
-        }
-      }
-      regError.value = info.text || '注册失败，请稍后重试';
-    }
-
-    async function doRegister() {
-      regError.value = '';
-      regNotice.value = '';
-      if (!regConfig.enabled) {
-        regError.value = regConfig.reason || '自主注册未开放，请联系管理员。';
-        return;
-      }
-      if (regRetryLeft.value > 0) return;
-      if (regForm.username.trim().length < 2) {
-        regError.value = '账号至少 2 个字符';
-        return;
-      }
-      if (!passwordStrength.value.ok) {
-        regError.value = '密码至少 8 位，且必须同时包含字母和数字';
-        return;
-      }
-      if (regForm.password !== regForm.confirm) {
-        regError.value = '两次输入的密码不一致';
-        return;
-      }
-      if (regConfig.invite_required && !regForm.invite_code.trim()) {
-        regError.value = '请填写邀请码';
-        return;
-      }
-      regLoading.value = true;
-      try {
-        const d = await authApi.register({
-          username: regForm.username.trim(),
-          password: regForm.password,
-          invite_code: regForm.invite_code.trim(),
-          name: regForm.name.trim(),
-        });
-        const pending = d && (d.status === 'pending_approval' || d.approval_required === true);
-        regNotice.value = pending
-          ? `注册成功，账号待管理员审批。默认角色：${roleName(regConfig.default_role)}；审批通过后即可登录。`
-          : `注册成功，已按「${roleName(regConfig.default_role)}」角色开通，请使用新账号登录。`;
-        loginForm.username = regForm.username.trim();
-        regForm.password = '';
-        regForm.confirm = '';
-        regForm.invite_code = '';
-        window.setTimeout(() => { registerMode.value = false; }, 1200);
-      } catch (e) {
-        handleRegisterError(e);
-      } finally {
-        regLoading.value = false;
-      }
     }
 
     /* ---------------- 会话与全局数据 ---------------- */
@@ -460,8 +284,7 @@ const app = createApp({
         clearSession();
         notify.warn('登录已失效，请重新登录');
       });
-
-      loadRegisterConfig();
+      if (!session.token) await loadLoginPolicy();
 
       if (session.token) {
         try {
@@ -487,15 +310,11 @@ const app = createApp({
     onUnmounted(() => {
       window.removeEventListener('hashchange', applyRoute);
       if (counterTimer) window.clearInterval(counterTimer);
-      stopRetry();
-      stopRegRetry();
     });
 
     return {
-      session, loginForm, loginError, loginLoading, retryLeft, challenge,
-      registerMode, regForm, regLoading, regError, regNotice, regRetryLeft,
-      regConfig, passwordStrength, canSubmitRegister,
-      doLogin, doRegister, openRegister, backToLogin, logout,
+      session, loginForm, loginError, loginLoading, loginPolicy,
+      doLogin, logout,
       route, routeTab, routeError, currentPage, currentTabs,
       currentMenuTitle, currentTabTitle,
       visibleMenus, menuItems, fallbackRoute, modeSummary,

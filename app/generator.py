@@ -76,6 +76,8 @@ def build_variant(db, c, platform, data, revision=1, parent_id=None):
                        hashtags=str(data.get('hashtags', ''))[:500],
                        image_prompt=str(data.get('image_prompt', '')),
                        best_time=str(data.get('best_time', ''))[:100], revision=revision, parent_id=parent_id)
+    from .platforms import resolve
+    v.platform_id = resolve(db, platform).id
     db.add(v)
     db.flush()
     from .quality import score_variant
@@ -96,16 +98,22 @@ def generate_daily(db: Session, target: date | None = None, topics=None):
             created.append(existing)
             continue
         context = generation_context(db, topic)
-        data = call_json(db, 'generate', SYS, json.dumps(context, ensure_ascii=False),
+        from .platforms import active
+        platforms = active(db)
+        if not platforms:
+            raise ValueError('至少启用一个发布平台')
+        context['platforms'] = [{'code': p.code, 'name': p.name, 'style': p.style_prompt, 'default_time':p.default_time} for p in platforms]
+        codes = [p.code for p in platforms]
+        data = call_json(db, 'generate', SYS + '\n以请求platforms为准，为每个code返回一个对象，不限于四个平台。', json.dumps(context, ensure_ascii=False),
                          topic.id, context)
         # 先校验整份输出，禁止只生成部分平台后留下半包。
-        if any(not isinstance(data.get(p), dict) or not data[p].get('body') for p in PLATFORMS):
-            raise AIUnavailable('AI未返回四个平台的完整正文')
+        if any(not isinstance(data.get(p), dict) or not data[p].get('body') for p in codes):
+            raise AIUnavailable('AI未返回全部启用平台的完整正文')
         c = Content(topic_id=topic.id, biz_line=topic.biz_line, title=topic.title,
                     scheduled_date=target, generation_key=key, status='draft')
         db.add(c)
         db.flush()
-        for p in PLATFORMS:
+        for p in codes:
             build_variant(db, c, p, data[p])
         topic.last_used_at = utcnow()
         db.flush()
@@ -152,7 +160,9 @@ def regenerate_variant(db, old):
         return existing
     topic = old.content.topic
     context = generation_context(db, topic) if topic else {'title': old.content.title, 'required': []}
-    context.update(platform=old.platform, reason=old.rejection_reason, previous=old.body)
+    from .platforms import resolve
+    p = resolve(db, old.platform)
+    context.update(platform=old.platform, platform_style=p.style_prompt, reason=old.rejection_reason, previous=old.body)
     try:
         data = call_json(db, 'regenerate', SYS + '\n只输出给定platform的一个版本对象，按reason改写。',
                          json.dumps(context, ensure_ascii=False), old.id, context)

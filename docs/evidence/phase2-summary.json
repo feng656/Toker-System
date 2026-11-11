@@ -1,0 +1,19 @@
+{
+  "date": "2026-11-09",
+  "baseline": "23fe5418a80117ce38ee6e23b746502f388fbbca",
+  "test_isolated": {"passed": 73, "failed": 0, "seconds": 218.16},
+  "test_postgresql": {"passed": 73, "failed": 0, "seconds": 188.26, "dedicated_schema": true},
+  "statement_coverage_percent_rounded": 80,
+  "statements": 3625,
+  "uncovered": 742,
+  "migration": {"old_revision": "0002_backend_closure", "new_revision": "0003_phase2", "historical_content_preserved": true, "platform_backfilled": true, "metric_views_preserved": 1000, "model_drift": false},
+  "real_storage": {"backend": "MinIO private bucket", "api_upload_readback_sha256_match": true, "asset_bytes": 215, "generated_variants": 1, "ai_demo": true},
+  "login_load": {"requests": 64, "concurrency": 16, "http_401": 4, "http_429": 60, "login_p95_ms": 508.48, "health_status": 200, "health_ms": 26.28, "transport": "in-process TestClient, real PostgreSQL"},
+  "openapi_paths": 112,
+  "phase1_nine_step_demo": "passed-with-explicit-fixtures",
+  "real_platform_delivery_verified": false,
+  "real_ai_video_verified": false,
+  "gitee_sync_verified": false,
+  "container_build_verified": false,
+  "frontend_changed": false
+}

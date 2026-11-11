@@ -117,8 +117,8 @@ def create_task(db, data, filename, kind, variant_id, platform='', request_key=N
         raise HTTPException(404, '内容版本不存在')
     if kind == 'metrics' and not v:
         raise HTTPException(422, '指标截图必须指定内容版本')
-    if not v and platform not in ('douyin', 'shipinhao', 'gzh', 'moments', 'xhs'):
-        raise HTTPException(422, '评论截图须指定平台或内容版本')
+    from .platforms import resolve
+    pf = resolve(db, v.platform if v else platform)
     digest = hashlib.sha256(data).hexdigest()
     key = request_key or f'{kind}:{variant_id}:{platform}:{digest}'
     if len(key) > 200:
@@ -132,7 +132,7 @@ def create_task(db, data, filename, kind, variant_id, platform='', request_key=N
     except Exception:
         raise HTTPException(503, '截图未保存：对象存储未配置或不可用')
     task = OCRTask(request_key=key, kind=kind, variant_id=variant_id,
-                   platform=v.platform if v else platform, image_url=ref)
+                   platform=v.platform if v else platform, platform_id=pf.id, image_url=ref)
     db.add(task)
     apply_recognition(task, data)
     db.flush()
@@ -198,7 +198,8 @@ def confirm_task(db, task, body, actor):
         ids, lead_ids = [], []
         for i, item in enumerate(validated):
             it = Interaction(**item.model_dump(exclude={'auto_classify', 'source_key'}),
-                             source_key=f'ocr:{task.id}:{i}', body_img_url=task.image_url, ocr_task_id=task.id)
+                             source_key=f'ocr:{task.id}:{i}', body_img_url=task.image_url, ocr_task_id=task.id,
+                             platform_id=task.platform_id)
             db.add(it)
             db.flush()
             lead = classify_interaction(db, it)

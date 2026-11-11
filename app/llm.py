@@ -37,14 +37,19 @@ def _demo(kind, context):
                 'image_prompt': '使用已经授权的产品或案例实拍'}
     if kind == 'regenerate':
         return variant(context['platform'])
-    return {pf: variant(pf) for pf in ('douyin', 'shipinhao', 'gzh', 'moments')}
+    if kind in ('comment_write', 'comment_polish'):
+        return {'comments': [f'关于{context.get("keyword", "项目")}，{context.get("target_id", "目标")}的第{i+1}点讨论：{context.get("draft") or "请问有哪些实际应用经验"}？' for i in range(context.get('count',1))]}
+    if kind == 'dm_reply':
+        return {'reply': '感谢你的咨询，请补充项目场景和交付地区，我们由专人核实需求后回复。'}
+    return {pf: variant(pf) for pf in [p['code'] for p in context.get('platforms', [])] or ('douyin', 'shipinhao', 'gzh', 'moments')}
 
 
 def call_json(db: Session, kind: str, system: str, user: str,
-              resource_id=None, context=None) -> dict:
+              resource_id=None, context=None, provider_id=None) -> dict:
     context = context or {}
     digest = hashlib.sha256((system + user).encode()).hexdigest()
-    providers = config.LLM_PROVIDERS
+    from .ai_providers import text_providers
+    providers = text_providers(db, provider_id)
     if config.DEMO_MODE:
         providers = [{'name': 'demo', 'model': 'deterministic-fixture', 'demo': True}]
     if not providers:

@@ -68,7 +68,9 @@ def merge_lead(db, it, data):
         if lead:
             reason = 'need_similarity'
     if not lead:
-        lead = Lead(interaction_id=it.id, platform=it.platform, visitor_name=it.author_name,
+        from .platforms import resolve
+        pf = resolve(db, it.platform)
+        lead = Lead(interaction_id=it.id, platform=it.platform, platform_id=pf.id, visitor_name=it.author_name,
                     author_key=ak, intent=data['intent'], identity=data['identity'],
                     need_summary=data.get('need_summary', '')[:5000],
                     contact_info=data.get('contact_info', '')[:300], contact_keys=keys,
@@ -118,7 +120,9 @@ def classify_interaction(db, it):
 
 
 def classify_text(db, platform, kind, author_name, body):
-    it = Interaction(platform=platform, kind=kind, author_name=author_name, body=body)
+    from .platforms import resolve
+    pf = resolve(db, platform)
+    it = Interaction(platform=platform, platform_id=pf.id, kind=kind, author_name=author_name, body=body)
     db.add(it)
     db.flush()
     return classify_interaction(db, it)
