@@ -6,9 +6,10 @@ import { ref, reactive, onMounted } from '../core/vue.js';
 import { platformApi } from '../api/platform.js';
 import { ruleApi } from '../api/library.js';
 import { authApi } from '../api/auth.js';
+import { aiApi } from '../api/ai.js';
 import { notify, errorMessage } from '../core/ui.js';
 import { platformName, PLATFORM_HOME } from '../core/format.js';
-import { session, isAdmin, PAGE_ROLES } from '../core/store.js';
+import { session, isAdmin, canWriteContent, PAGE_ROLES } from '../core/store.js';
 
 const ROLE_VISIBLE = {
   admin: '全部页面 + 平台凭据 / 合规红线 / 用户管理',
@@ -23,6 +24,7 @@ export default {
     const accounts = ref([]);
     const rules = ref([]);
     const users = ref([]);
+    const aiStatus = reactive({ llm: null, video: null, error: '' });
     const loading = ref(false);
     const error = ref('');
     const forbidden = ref(false);
@@ -43,6 +45,12 @@ export default {
       try {
         const st = await platformApi.status();
         platStatus.value = st || [];
+        if (canWriteContent()) {
+          const [llmSt, videoSt] = await Promise.allSettled([aiApi.llmStatus(), aiApi.videoStatus()]);
+          aiStatus.llm = llmSt.status === 'fulfilled' ? llmSt.value : null;
+          aiStatus.video = videoSt.status === 'fulfilled' ? videoSt.value : null;
+          aiStatus.error = !aiStatus.llm && !aiStatus.video ? 'AI 能力状态加载失败' : '';
+        }
         if (isAdmin()) {
           const [acc, rl, us] = await Promise.all([
             platformApi.list().catch(() => []),
@@ -125,9 +133,9 @@ export default {
     onMounted(load);
 
     return {
-      platStatus, accounts, rules, users, loading, error, forbidden,
+      platStatus, accounts, rules, users, aiStatus, loading, error, forbidden,
       accForm, ruleForm, userForm, load, saveAccount, addRule, removeRule, addUser,
-      platformName, PLATFORM_HOME, isAdmin, session, ROLE_VISIBLE, PAGE_ROLES,
+      platformName, PLATFORM_HOME, isAdmin, canWriteContent, session, ROLE_VISIBLE, PAGE_ROLES,
     };
   },
   template: `
@@ -155,6 +163,37 @@ export default {
       <span class="k">管理员</span><span>{{ ROLE_VISIBLE.admin }}</span>
       <span class="k">运营</span><span>{{ ROLE_VISIBLE.operator }}</span>
       <span class="k">销售</span><span>{{ ROLE_VISIBLE.sales }}</span>
+    </div>
+  </div>
+
+  <div v-if="canWriteContent()" class="card">
+    <h4 class="card-title">AI 能力（平台接入）</h4>
+    <div v-if="aiStatus.error" class="alert-strip warn">{{ aiStatus.error }}</div>
+    <div class="kv">
+      <span class="k">文案生成</span>
+      <span v-if="aiStatus.llm">
+        <el-tag size="small" :type="aiStatus.llm.configured ? 'success' : 'info'">
+          {{ aiStatus.llm.configured ? '已接入平台模型网关' : '未配置' }}
+        </el-tag>
+        <span v-if="aiStatus.llm.configured" class="muted" style="margin-left:8px">
+          {{ (aiStatus.llm.providers || []).map(p => p.model).filter(Boolean).join(' → ') }}
+        </span>
+      </span>
+      <span v-else class="muted">状态未知</span>
+      <span class="k">视频生成</span>
+      <span v-if="aiStatus.video">
+        <el-tag size="small" :type="aiStatus.video.configured ? 'success' : 'info'">
+          {{ aiStatus.video.configured ? '已接入平台视频服务' : '未配置' }}
+        </el-tag>
+        <span v-if="aiStatus.video.configured" class="muted" style="margin-left:8px">
+          {{ aiStatus.video.model }} · {{ aiStatus.video.resolution }} · {{ aiStatus.video.aspect_ratio }} · {{ aiStatus.video.duration_sec }}s
+        </span>
+      </span>
+      <span v-else class="muted">状态未知</span>
+    </div>
+    <div class="gap-note">
+      文案走平台模型网关（OpenAI 兼容，主模型失败自动切备用）；视频走平台 /agent-api/video。密钥只存在服务端 .env，页面不会展示。
+      未配置时视频入口会明确提示，不生成占位视频冒充成片。
     </div>
   </div>
 

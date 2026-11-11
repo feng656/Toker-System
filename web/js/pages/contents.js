@@ -8,6 +8,7 @@
  */
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from '../core/vue.js';
 import { contentApi } from '../api/content.js';
+import { videoApi } from '../api/video.js';
 import { notify, errorMessage } from '../core/ui.js';
 import {
   platformName, bizLineClass, bizLineName, contentStatusName, variantStatusName,
@@ -103,6 +104,102 @@ export default {
       open: false, loading: false, error: '', contentTitle: '', platform: '',
       variants: [], leftId: null, rightId: null,
     });
+
+    /* ---------------- 视频生成（平台 /video/*） ---------------- */
+    const video = reactive({
+      open: false, configured: null, status: null, submitting: false, error: '',
+      variantId: null, title: '', platform: '', taskId: null, task: null,
+      polling: false, blobUrl: '', modelNote: '',
+    });
+    let videoTimer = null;
+    let videoPollToken = 0;
+
+    function stopVideoPoll() {
+      videoPollToken += 1;
+      video.polling = false;
+      if (videoTimer) { window.clearTimeout(videoTimer); videoTimer = null; }
+    }
+
+    function resetVideoUrl() {
+      if (video.blobUrl) { URL.revokeObjectURL(video.blobUrl); video.blobUrl = ''; }
+    }
+
+    async function openVideo(v) {
+      stopVideoPoll();
+      resetVideoUrl();
+      Object.assign(video, {
+        open: true, error: '', submitting: false, variantId: v.id, title: v.cover_text || '未命名内容',
+        platform: v.platform, taskId: null, task: null, modelNote: '',
+      });
+      if (video.status === null) {
+        try { video.status = await videoApi.status(); } catch (e) { video.status = { configured: false }; }
+      }
+      video.configured = !!(video.status && video.status.configured);
+      if (video.configured) {
+        const s = video.status;
+        video.modelNote = `${s.model} · ${s.resolution} · ${s.aspect_ratio} · ${s.duration_sec} 秒`;
+      }
+    }
+
+    async function startVideo() {
+      if (!video.configured) return;
+      video.submitting = true;
+      video.error = '';
+      try {
+        const r = await videoApi.generate({ variant_id: video.variantId });
+        video.taskId = r.task_id;
+        video.task = { status: r.status };
+        watchVideo(r.task_id);
+      } catch (e) {
+        video.error = errorMessage(e);
+      } finally {
+        video.submitting = false;
+      }
+    }
+
+    async function watchVideo(taskId) {
+      const token = ++videoPollToken;
+      video.polling = true;
+      try {
+        for (;;) {
+          if (token !== videoPollToken) return;
+          const task = await videoApi.task(taskId);
+          if (token !== videoPollToken) return;
+          video.task = task;
+          if (task.status === 'succeeded') {
+            await loadVideoBlob(taskId, token);
+            return;
+          }
+          if (task.status === 'failed') {
+            video.error = task.error || '视频生成失败，可稍后重试';
+            return;
+          }
+          await new Promise((resolve) => { videoTimer = window.setTimeout(resolve, 5000); });
+        }
+      } catch (e) {
+        if (token === videoPollToken) video.error = errorMessage(e);
+      } finally {
+        if (token === videoPollToken) video.polling = false;
+      }
+    }
+
+    async function loadVideoBlob(taskId, token) {
+      try {
+        const res = await videoApi.file(taskId);
+        const blob = await res.blob();
+        if (token !== videoPollToken) return;
+        resetVideoUrl();
+        video.blobUrl = URL.createObjectURL(blob);
+      } catch (e) {
+        if (token === videoPollToken) video.error = '成片已生成，但预览加载失败：' + errorMessage(e);
+      }
+    }
+
+    function closeVideo() {
+      stopVideoPoll();
+      resetVideoUrl();
+      video.open = false;
+    }
 
     /* ---------------- 数据加载 ---------------- */
 
@@ -674,6 +771,8 @@ export default {
 
     onUnmounted(() => {
       if (syncTimer) window.clearTimeout(syncTimer);
+      stopVideoPoll();
+      resetVideoUrl();
       window.removeEventListener('hashchange', onHashChange);
     });
 
@@ -682,6 +781,7 @@ export default {
       openMap, draft, busy, selected, rejectMode, rejectNote,
       todo, batch, batchRejectOpen, batchRejectReason, batchRejectError,
       cmp, cmpLeft, cmpRight, cmpSame, cmpDiff,
+      video, openVideo, startVideo, closeVideo,
       stats, visibleCount, activeFilterCount, allSelected, selectedCount, selectedList,
       QUALITY_OPTIONS, platformFilterOptions,
       load, loadTodo, resetFilters, jumpTodo, toggle, saveVariant, approveOne, rejectOne,
@@ -861,6 +961,7 @@ export default {
         <el-input v-model="draft[v.id].hashtags" placeholder="话题标签" size="small" style="margin-top:6px"></el-input>
         <div class="row mt10">
           <el-button v-if="canWriteContent" size="small" type="primary" :loading="busy[v.id]" @click="saveVariant(v)">保存并重新合规检查</el-button>
+          <el-button v-if="canWriteContent" size="small" @click="openVideo(v)">生成视频</el-button>
           <el-button v-if="canWriteContent && v.confirm_status === 'pending' && v.status === 'pending' && v.compliance_ok"
                      size="small" type="success" :loading="busy[v.id]" @click="approveOne(v)">通过此版本</el-button>
           <el-button v-if="canWriteContent && v.confirm_status === 'pending' && v.status === 'pending' && v.compliance_ok"
@@ -887,6 +988,42 @@ export default {
     </div>
   </div>
 </template>
+
+<!-- 视频生成 -->
+<el-dialog v-model="video.open" title="生成视频" width="620px" @closed="closeVideo">
+  <div class="muted mb10">{{ video.title }} · {{ platformName(video.platform) }}</div>
+  <div v-if="video.error" class="alert-strip error">{{ video.error }}</div>
+
+  <template v-if="video.configured === false">
+    <el-alert type="warning" :closable="false" show-icon
+              title="平台视频服务未配置"
+              description="部署时需在 .env 配置 PIOS_API_URL 与 PIOS_TOKEN。未配置时系统不会生成占位视频冒充真实成片。"></el-alert>
+  </template>
+
+  <template v-else>
+    <div v-if="video.modelNote" class="gap-note">模型：{{ video.modelNote }}；系统会按当前文案自动拼提示词，不虚构业绩数字、客户名称或价格。</div>
+
+    <div v-if="video.task" class="mt10">
+      <div class="row">
+        <el-tag size="small" :type="video.task.status === 'succeeded' ? 'success' : (video.task.status === 'failed' ? 'danger' : 'warning')">
+          {{ video.task.status === 'pending' ? '排队中' : (video.task.status === 'running' ? '生成中' : (video.task.status === 'succeeded' ? '已完成' : (video.task.status === 'failed' ? '失败' : video.task.status))) }}
+        </el-tag>
+        <span class="muted">任务 #{{ video.taskId }}</span>
+        <span v-if="video.task.result && video.task.result.credits_charged" class="muted">
+          消耗 {{ video.task.result.credits_charged }} 积分
+        </span>
+      </div>
+      <div v-if="video.polling" class="gap-note">视频生成通常需要数十秒到数分钟，可关闭窗口稍后在任务中查看。</div>
+      <video v-if="video.blobUrl" :src="video.blobUrl" controls playsinline
+             style="width:100%;max-height:420px;margin-top:10px;border-radius:8px;background:#000"></video>
+    </div>
+  </template>
+
+  <template #footer>
+    <el-button @click="closeVideo">关闭</el-button>
+    <el-button v-if="video.configured && !video.task" type="primary" :loading="video.submitting" @click="startVideo">开始生成</el-button>
+  </template>
+</el-dialog>
 
 <!-- 批量审批结果 -->
 <el-dialog v-model="batch.open" :title="batch.title" width="760px" :close-on-click-modal="!batch.running">

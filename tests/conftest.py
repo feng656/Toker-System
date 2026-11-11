@@ -25,6 +25,9 @@ def db_reset(monkeypatch):
     monkeypatch.setattr(config, 'CRM_WEBHOOK', '')
     monkeypatch.setattr(config, 'WECOM_WEBHOOK', '')
     monkeypatch.setattr(config, 'OFFICIAL_PUBLISH_ENABLED', False)
+    monkeypatch.setattr(config, 'PIOS_API_URL', '')
+    monkeypatch.setattr(config, 'PIOS_TOKEN', '')
+    monkeypatch.setattr(config, 'VIDEO_POLL_INTERVAL', 0.0)
     if engine.dialect.name == 'postgresql' and os.getenv('ALLOW_TEST_DATABASE_RESET') != 'yes':
         raise RuntimeError('真库测试须设置ALLOW_TEST_DATABASE_RESET=yes并使用独立测试schema')
     cfg = Config(str(Path(__file__).resolve().parents[1] / 'alembic.ini'))

@@ -12,7 +12,7 @@ from .models import (AIJob, ComplianceRule, Content, ContentVariant, Interaction
     ReviewEvent, TaskExecution, Topic, User, WeeklyReport)
 from .schemas import (AccountIn, BrowserPublishIn, InteractionIn, LeadUpdate, LoginIn,
     MaterialIn, MetricIn, OCRConfirmIn, PasswordIn, PublishIn, RejectIn, ReviewIn,
-    RuleIn, TopicIn, UserIn, VariantUpdate, VersionIn)
+    RuleIn, TopicIn, UserIn, VariantUpdate, VersionIn, VideoIn)
 
 api = APIRouter()
 operate = require_role('admin', 'operator')
@@ -263,7 +263,7 @@ def retry_task(tid: int, bg: BackgroundTasks, db: Session = Depends(get_db), _=D
         raise HTTPException(409, '仅失败或待执行的任务可重试')
     job.status = 'pending'
     db.commit()
-    bg.add_task(run_daily_task, job.id)
+    bg.add_task(run_video_task if job.kind == 'video_generate' else run_daily_task, job.id)
     return as_dict(job)
 
 
@@ -282,6 +282,78 @@ def ai_jobs(kind: str | None = None, status: str | None = None, limit: int = Que
 def llm_status(_=Depends(operate)):
     from .llm import status
     return status()
+
+
+@api.get('/video/status', tags=['AI审计'])
+def video_status(_=Depends(operate)):
+    from .video_provider import status
+    return status()
+
+
+def run_video_task(key):
+    from .db import SessionLocal
+    from .tasks import execute_video
+    with SessionLocal() as db:
+        job = db.get(TaskExecution, key)
+        if job:
+            execute_video(db, job)
+
+
+@api.post('/video/generate', status_code=202, tags=['内容任务'])
+def video_generate(body: VideoIn, bg: BackgroundTasks, db: Session = Depends(get_db), _=Depends(operate)):
+    """提交平台视频生成任务；未配置平台视频服务时 503，不生成占位视频冒充。"""
+    from . import video_provider
+    from .tasks import enqueue_video
+    if not video_provider.configured():
+        raise HTTPException(503, '未配置平台视频服务（PIOS_API_URL / PIOS_TOKEN）')
+    prompt = body.prompt
+    if body.variant_id is not None:
+        v = row(db, ContentVariant, body.variant_id)
+        from .video_gen import _video_prompt
+        prompt = prompt or _video_prompt(v.content.title, v.body, v.content.biz_line)
+    if not prompt:
+        raise HTTPException(422, '需提供 prompt 或 variant_id')
+    ref_path = None
+    if body.ref_image_base64:
+        # 参考图落盘再入任务，避免把几十 MB base64 写进任务表。
+        import base64
+        import hashlib
+        from .config import VIDEO_OUTPUT_DIR
+        raw = base64.b64decode(body.ref_image_base64)
+        ref_path = VIDEO_OUTPUT_DIR / 'refs' / (hashlib.sha256(raw).hexdigest()[:32] + '.img')
+        ref_path.parent.mkdir(parents=True, exist_ok=True)
+        ref_path.write_bytes(raw)
+    job = enqueue_video(db, prompt, variant_id=body.variant_id, duration_sec=body.duration_sec,
+                        resolution=body.resolution, aspect_ratio=body.aspect_ratio,
+                        model=body.model, seed=body.seed, ref_image_path=str(ref_path) if ref_path else None)
+    db.commit()
+    if job.status == 'pending':
+        bg.add_task(run_video_task, job.id)
+    return {'ok': True, 'task_id': job.id, 'status': job.status, 'state_url': f'/api/v1/video/tasks/{job.id}'}
+
+
+@api.get('/video/tasks/{tid}', tags=['内容任务'])
+def video_task(tid: int, db: Session = Depends(get_db), _=Depends(operate)):
+    job = row(db, TaskExecution, tid)
+    if job.kind != 'video_generate':
+        raise HTTPException(404, '视频任务不存在')
+    return as_dict(job)
+
+
+@api.get('/video/tasks/{tid}/file', tags=['内容任务'])
+def video_task_file(tid: int, db: Session = Depends(get_db), _=Depends(operate)):
+    """下载本地成片（前端用带令牌的 fetch 取 blob 播放，不暴露服务器路径）。"""
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+    job = row(db, TaskExecution, tid)
+    if job.kind != 'video_generate' or job.status != 'succeeded':
+        raise HTTPException(404, '视频尚未生成')
+    raw = str((job.result or {}).get('path') or '')
+    path = Path(raw).resolve()
+    root = config.VIDEO_OUTPUT_DIR.resolve()
+    if not raw or root not in path.parents or not path.is_file():
+        raise HTTPException(404, '视频文件不存在')
+    return FileResponse(path, media_type='video/mp4', filename=path.name)
 
 
 @api.get('/contents', tags=['内容'])
