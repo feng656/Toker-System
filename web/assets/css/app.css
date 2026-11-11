@@ -30,8 +30,8 @@ body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:
 @media(max-width:600px){.pa-platform-grid{grid-template-columns:repeat(2,minmax(0,1fr));max-height:260px}.pa-dialog .el-dialog__body{padding-top:4px}.pa-heading>.row{width:100%}.pa-dialog .el-dialog__footer{white-space:normal}}
 
 /* ---------- 登录 ---------- */
-.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(160deg,#1f2d3d,#2b3f56)}
-.login-card{width:360px;background:#fff;border-radius:12px;padding:30px 28px;box-shadow:0 12px 40px rgba(0,0,0,.25)}
+.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:32px 16px;background:linear-gradient(180deg,rgba(10,18,30,.20),rgba(10,18,30,.52)),url("../img/login-bg.jpg") center/cover no-repeat,#1f2d3d}
+.login-card{width:min(360px,100%);background:rgba(255,255,255,.97);border:1px solid rgba(255,255,255,.6);border-radius:14px;padding:30px 28px;box-shadow:0 24px 70px rgba(5,12,22,.38);backdrop-filter:blur(8px)}
 .login-brand{font-size:20px;font-weight:700;color:#1f2d3d}
 .login-sub{font-size:12px;color:#909399;margin:6px 0 20px}
 .login-foot{margin-top:16px;font-size:12px;color:#909399;line-height:1.7;border-top:1px solid #ebeef5;padding-top:12px}
