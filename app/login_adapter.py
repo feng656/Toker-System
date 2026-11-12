@@ -30,8 +30,9 @@ LOG = logging.getLogger('login_adapter')
 PLATFORM_CONFIG: dict[str, dict[str, Any]] = {
     'douyin': {
         # 使用创作者中心入口而不是营销首页：该入口稳定渲染扫码登录卡片。
+        # 未登录时页面地址也停在 /creator-micro/，不能用 URL 判定登录成功；
+        # 只认平台登录后签发的会话 Cookie，避免二维码刚出就被误判为已登录。
         'url': 'https://creator.douyin.com/creator-micro/home',
-        'url_contains': ('/creator-micro/',),
         'cookies': ('sessionid', 'sessionid_ss', 'sid_guard'),
         # 官方页面把二维码放在 data:image PNG 里；等待元素出现比反复执行
         # 页面脚本更稳，避免首屏长时间主线程繁忙时把等待窗口耗尽。
@@ -338,6 +339,8 @@ class BrowserManager:
         if session.page.is_closed():
             return False
         settings = PLATFORM_CONFIG[session.platform]
+        # URL 仅作为可选辅助条件。抖音未登录时也停在 /creator-micro/，
+        # 单看 URL 会在 3 秒轮询后把登录卡片误判成已登录；会话 Cookie 才是凭据。
         url = session.page.url.lower()
         if any(part.lower() in url for part in settings.get('url_contains', ())):
             return True

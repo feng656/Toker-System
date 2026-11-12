@@ -187,3 +187,22 @@ def test_qr_capability_requires_trusted_endpoint_and_valid_cipher(client,headers
     assert get()['qr_status']=='configured'
     monkeypatch.setattr(config,'ADAPTER_ALLOWED_HOSTS',[])
     assert get()['qr_status']=='unconfigured'
+
+
+def test_douyin_login_detection_requires_session_cookie():
+    import asyncio
+    import types
+    from app.login_adapter import BrowserManager, PLATFORM_CONFIG
+    assert 'url_contains' not in PLATFORM_CONFIG['douyin']
+
+    class Page:
+        url='https://creator.douyin.com/creator-micro/home'
+        def is_closed(self):return False
+    class Context:
+        def __init__(self,cookies):self.value=cookies
+        async def cookies(self):return self.value
+    session=types.SimpleNamespace(page=Page(),platform='douyin',context=Context([]))
+    manager=BrowserManager()
+    assert asyncio.run(manager._logged_in(session)) is False
+    session.context=Context([{'name':'sessionid','value':'x'*32}])
+    assert asyncio.run(manager._logged_in(session)) is True
