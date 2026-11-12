@@ -12,7 +12,9 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
     fi; \
     apt-get update && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng fonts-noto-cjk ffmpeg chromium && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# 构建机在国内访问 pypi.org 也慢；阿里云 PyPI 镜像可用时优先，海外构建可覆盖该 ARG。
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+RUN pip install --no-cache-dir -i "${PIP_INDEX_URL}" -r requirements.txt
 RUN useradd --create-home --uid 10001 toker
 COPY --chown=toker:toker . .
 RUN mkdir -p var/video_out var/uploads var/browser_state && chown -R toker:toker /app
