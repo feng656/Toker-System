@@ -163,6 +163,8 @@ body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:
 .wk-tab.on{background:#409eff;border-color:#409eff;color:#fff}
 .wk-tab.over{border-color:#409eff;background:#ecf5ff;color:#409eff;box-shadow:0 0 0 2px rgba(64,158,255,.25)}
 .wk-tab.on.over{background:#409eff;color:#fff}
+.wk-tab-add{width:34px;padding:0;display:flex;align-items:center;justify-content:center;font-size:18px;line-height:1;color:#409eff;border-style:dashed;background:#f7fbff}
+.wk-tab-add:hover{background:#ecf5ff}
 .wk-tab-dot{position:absolute;top:4px;right:6px;width:6px;height:6px;border-radius:50%;background:#f56c6c}
 .wk-dropzone{border:1px dashed #dcdfe6;border-radius:8px;padding:14px;background:#fafbfc;transition:.15s}
 .wk-dropzone.over{background:#ecf5ff;border-color:#409eff;box-shadow:0 0 0 2px rgba(64,158,255,.18)}

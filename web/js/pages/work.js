@@ -59,6 +59,11 @@ export default {
     const dragging = ref(null);
     const textOnly = ref(false);
     const assigned = reactive({}); // variantId → 通道 key（卡片显示「已复制到 XX」）
+    const platformAccounts = ref(null);
+
+    function openAddPlatform() {
+      platformAccounts.value?.openAdd();
+    }
 
     let timer = null;
 
@@ -390,7 +395,7 @@ export default {
       assigned, textOnly, coverage, materials, materialError, materialEmpty,
       onDragStart, onDragEnd, onDragOver, onDragOut, onDrop, onPick,
       switchChannel, copyComposer, openBackend, markPublished, useTextOnly, gotoMaterials,
-      channelName,
+      channelName, platformAccounts, openAddPlatform,
       wsJobs, wsLoading, wsError, loadWorkspace, jobRun, jobConfirm, jobCancel,
       jobStatusName, jobStatusTag, isAdmin,
     };
@@ -518,6 +523,8 @@ export default {
             {{ c.name }}
             <span v-if="drafts[c.key] && drafts[c.key].sourceId" class="wk-tab-dot"></span>
           </div>
+          <button v-if="isAdmin()" type="button" class="wk-tab wk-tab-add" title="添加平台账号"
+                  aria-label="添加平台账号" @click="openAddPlatform">+</button>
         </div>
 
         <div class="wk-dropzone"
@@ -567,7 +574,7 @@ export default {
         </div>
       </div>
 
-      <platform-accounts />
+      <platform-accounts ref="platformAccounts" />
 
       <div class="card" v-if="wsJobs.length || wsError">
         <div class="row" style="justify-content:space-between">
