@@ -13,3 +13,4 @@ minio==7.2.20
 pillow==11.3.0
 pytesseract==0.3.13
 python-pptx==1.0.2
+playwright==1.60.0

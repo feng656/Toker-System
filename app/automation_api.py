@@ -1,3 +1,4 @@
+import base64
 from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
@@ -80,10 +81,16 @@ def logout(aid:int,db:Session=Depends(get_db),actor=Depends(operate)):
 def session(aid:int,db:Session=Depends(get_db),_=Depends(operate)):
     a=row(db,WorkspaceAccount,aid);result=workspace.public_account(a)
     if result['qr_available']:
+        # 直接返回本地读取的短生命周期 data URI，避免 HTTPS 页面被 HTTP MinIO
+        # 签名地址按混合内容拦截；二维码本来就是要展示给当前登录运营的。
         try:
-            result['qr_url']=storage.signed_url(a.qr_object_ref)
+            png=storage.get(a.qr_object_ref)
+            result['qr_url']='data:image/png;base64,'+base64.b64encode(png).decode()
         except Exception:
-            raise HTTPException(503, '无法获取二维码图片地址，请检查私有对象存储配置')
+            try:
+                result['qr_url']=storage.signed_url(a.qr_object_ref)
+            except Exception:
+                raise HTTPException(503, '无法获取二维码图片，请检查私有对象存储配置')
     return result
 
 

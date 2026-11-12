@@ -47,10 +47,13 @@ def request(action, payload, request_key=None):
     if request_key:
         headers['Idempotency-Key'] = request_key
     try:
-        response = httpx.post(url + '/v2/' + action, json=payload, headers=headers, timeout=60, follow_redirects=False)
+        response = httpx.post(url + '/v2/' + action, json=payload, headers=headers, timeout=75, follow_redirects=False)
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict) or data.get('ok') is not True:
+            message = data.get('error') if isinstance(data, dict) else None
+            if isinstance(message, str) and 0 < len(message.strip()) <= 200:
+                raise HTTPException(502, '适配服务：' + message.strip())
             raise ValueError('invalid response')
         return data
     except (httpx.HTTPError, ValueError):
