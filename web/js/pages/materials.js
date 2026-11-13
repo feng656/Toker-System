@@ -2,10 +2,11 @@
  * 素材库：公司素材的分类、业务线、公开级别维护 + 附件 + 筛选 + 批量导入入口。
  * 完成标志（《分工》4.2）：运营可独立维护素材和选题。
  */
-import { ref, reactive, computed, onMounted } from '../core/vue.js';
+import { ref, reactive, computed, onMounted, onUnmounted } from '../core/vue.js';
 import { materialApi } from '../api/library.js';
 import { phase2Api } from '../api/phase2.js';
 import { notify, errorMessage } from '../core/ui.js';
+import { http } from '../core/http.js';
 import {
   publicityName, bizLineClass, bizLineName, MATERIAL_CATEGORIES,
 } from '../core/format.js';
@@ -159,6 +160,7 @@ export default {
     async function loadAssets() {
       assetsLoading.value = true;
       assetsError.value = '';
+      clearAssetUrls();
       try {
         assets.value = await phase2Api.assets({ limit: 200 }) || [];
         await hydrateAssetUrls();
@@ -170,7 +172,7 @@ export default {
       }
     }
 
-    /** 签名地址逐张取；限并发，避免一屏 100+ 张时把接口打满。 */
+    /** 缩略图走同源接口后逐个取；限并发，避免一屏 100+ 张时把接口打满。 */
     async function hydrateAssetUrls() {
       const queue = assets.value.slice();
       const workers = Array.from({ length: 6 }, async () => {
@@ -179,14 +181,25 @@ export default {
       await Promise.all(workers);
     }
 
+    /** 缩略图以 Blob 方式取回：签名地址是 HTTP，HTTPS 页面直接加载会被浏览器拦截。 */
     async function loadAssetUrl(a) {
-      if (assetUrls[a.id] !== undefined && assetUrls[a.id] !== '') return;
+      if (assetUrls[a.id]) return;
       try {
-        const d = await phase2Api.assetUrl(a.id);
-        assetUrls[a.id] = (d && d.url) || '';
+        const res = await http.get(`/assets/${a.id}/thumb`, null, { raw: true, timeoutMs: 30000 });
+        const blob = await res.blob();
+        if (!blob.size) throw new Error('empty thumbnail');
+        assetUrls[a.id] = URL.createObjectURL(blob);
       } catch (e) {
         assetUrls[a.id] = '';
       }
+    }
+
+    function clearAssetUrls() {
+      Object.keys(assetUrls).forEach((id) => {
+        const url = assetUrls[id];
+        if (url) URL.revokeObjectURL(url);
+        delete assetUrls[id];
+      });
     }
 
     function openUpload() {
@@ -242,6 +255,7 @@ export default {
     });
 
     onMounted(() => { load(); loadAssets(); });
+    onUnmounted(clearAssetUrls);
 
     return {
       materials, filtered, loading, error, forbidden, filter, dlg, editing, saving, form, importDlg,
@@ -347,10 +361,11 @@ export default {
     </div>
     <div class="grid3">
       <div class="card" v-for="a in filteredAssets" :key="a.id">
-        <div @mouseenter="loadAssetUrl(a)">
-          <video v-if="assetUrls[a.id] && a.kind === 'video'" :src="assetUrls[a.id]" muted playsinline preload="metadata" style="width:100%;height:150px;object-fit:cover;border-radius:6px;background:#000"></video>
-          <img v-else-if="assetUrls[a.id]" :src="assetUrls[a.id]" loading="lazy" style="width:100%;height:150px;object-fit:cover;border-radius:6px" />
+        <div style="position:relative" @mouseenter="loadAssetUrl(a)">
+          <img v-if="assetUrls[a.id]" :src="assetUrls[a.id]" loading="lazy" style="width:100%;height:150px;object-fit:cover;border-radius:6px" />
+          <div v-else-if="assetUrls[a.id] === ''" style="width:100%;height:150px;background:#f5f7fa;border-radius:6px;display:flex;align-items:center;justify-content:center" class="muted">预览不可用</div>
           <div v-else style="width:100%;height:150px;background:#f5f7fa;border-radius:6px;display:flex;align-items:center;justify-content:center" class="muted">预览加载中…</div>
+          <span v-if="a.kind === 'video'" style="position:absolute;left:8px;top:8px;padding:2px 8px;border-radius:10px;background:rgba(0,0,0,.62);color:#fff;font-size:12px">视频</span>
         </div>
         <div class="row mt6" style="justify-content:space-between">
           <b style="font-size:13px">{{ a.title }}</b>

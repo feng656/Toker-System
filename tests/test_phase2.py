@@ -102,6 +102,11 @@ def test_assets_validate_private_permissions_generate_usage(client,headers,image
     assert len(usage)==1
     monkeypatch.setattr('app.storage.signed_url',lambda ref:'https://storage.invalid/signed')
     assert client.get(f'/api/v1/assets/{asset["id"]}/url',headers=headers).status_code==200
+    thumb=client.get(f'/api/v1/assets/{asset["id"]}/thumb',headers=headers)
+    assert thumb.status_code==200 and thumb.headers['content-type']=='image/jpeg'
+    assert thumb.content.startswith(b'\xff\xd8\xff')
+    assert client.get('/api/v1/assets/999999/thumb',headers=headers).status_code==404
+    assert client.get(f'/api/v1/assets/{asset["id"]}/thumb',headers=token_for(client,'sales01')).status_code==403
 
 
 def test_manual_draft_needs_quality_and_review(client,headers):

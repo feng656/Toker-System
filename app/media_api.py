@@ -1,5 +1,13 @@
+import io
+import subprocess
+import tempfile
+from functools import lru_cache
+from pathlib import Path
 from typing import Literal
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import Response
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .api import operate, row, as_dict
@@ -49,6 +57,35 @@ def edit_asset(aid:int,body:AssetUpdate,db:Session=Depends(get_db),_=Depends(ope
 @api.get('/assets/{aid}/url', tags=['二期素材'])
 def asset_url(aid:int,db:Session=Depends(get_db),_=Depends(operate)):
     return {'url':storage.signed_url(row(db,MediaAsset,aid).object_ref),'expires_seconds':600}
+
+
+@api.get('/assets/{aid}/thumb', tags=['二期素材'])
+def asset_thumb(aid:int,db:Session=Depends(get_db),_=Depends(operate)):
+    """同源缩略图。浏览器的 HTTPS 页面加载不了 MinIO 的 HTTP 签名地址，图片统一走这里。"""
+    a=row(db,MediaAsset,aid)
+    try:
+        return Response(content=_thumb(a.object_ref,a.kind),media_type='image/jpeg',
+                        headers={'Cache-Control':'private, max-age=600'})
+    except Exception:
+        raise HTTPException(503,'缩略图生成失败')
+
+
+@lru_cache(maxsize=256)
+def _thumb(object_ref:str,kind:str)->bytes:
+    raw=storage.get(object_ref)
+    if kind=='image':
+        with Image.open(io.BytesIO(raw)) as im:
+            im=im.convert('RGB')
+            im.thumbnail((480,480))
+            out=io.BytesIO();im.save(out,'JPEG',quality=82)
+            return out.getvalue()
+    # 视频取首帧作封面；容器内已装 ffmpeg（见 Dockerfile）。
+    with tempfile.TemporaryDirectory() as d:
+        src=Path(d)/'in.mp4';src.write_bytes(raw)
+        dst=Path(d)/'out.jpg'
+        subprocess.run(['ffmpeg','-y','-ss','0.3','-i',str(src),'-frames:v','1',
+                        '-vf','scale=480:-2',str(dst)],capture_output=True,timeout=30,check=True)
+        return dst.read_bytes()
 
 
 @api.get('/assets/{aid}/usage', tags=['二期素材'])
