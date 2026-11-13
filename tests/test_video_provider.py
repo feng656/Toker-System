@@ -50,7 +50,7 @@ def test_submit_falls_back_when_primary_upstream_unavailable(monkeypatch):
     monkeypatch.setattr(config, 'VIDEO_MODEL', 'MiniMax-H3')
     monkeypatch.setattr(config, 'VIDEO_RESOLUTION', '2K')
     monkeypatch.setattr(config, 'VIDEO_FALLBACK_MODEL', 'doubao-seedance-2-0-mini-260615')
-    monkeypatch.setattr(config, 'VIDEO_FALLBACK_RESOLUTION', '1080P')
+    monkeypatch.setattr(config, 'VIDEO_FALLBACK_RESOLUTION', '720P')
     route = respx.post(API + '/agent-api/video/generate')
     route.side_effect = [
         httpx.Response(502, json={'error': {'type': 'upstream_error'}}),
@@ -64,7 +64,7 @@ def test_submit_falls_back_when_primary_upstream_unavailable(monkeypatch):
     bodies = [json.loads(call.request.content) for call in route.calls]
     assert bodies[0]['model'] == 'MiniMax-H3' and bodies[0]['resolution'] == '2K'
     assert bodies[1]['model'] == 'doubao-seedance-2-0-mini-260615'
-    assert bodies[1]['resolution'] == '1080P'
+    assert bodies[1]['resolution'] == '720P'
 
 
 @respx.mock

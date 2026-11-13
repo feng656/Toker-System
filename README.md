@@ -44,6 +44,6 @@ cp .env.example .env          # 填写 DATABASE_URL / JWT_SECRET / MINIO_*
 
 ## 外部依赖
 
-- AI 能力已接入本平台（πOS）：文案填 `PIOS_MODEL_KEY`（`pios model key` 签发）即走平台模型网关，默认 `moonshotai/kimi-k3.1-pro` 主模型 + `qwen/qwen3.8-2.4t-a95b` 备用；视频填 `PIOS_API_URL` + `PIOS_TOKEN`，走平台 `/agent-api/video/*`（默认 `MiniMax-H3` 2K，上游 502 时自动降级到 `doubao-seedance-2-0-mini-260615` 1080P 重试一次）。未配置时任务显式失败或标记演示，不回退为假成功。
+- AI 能力已接入本平台（πOS）：文案填 `PIOS_MODEL_KEY`（`pios model key` 签发）即走平台模型网关，默认 `moonshotai/kimi-k3.1-pro` 主模型 + `qwen/qwen3.8-2.4t-a95b` 备用；视频填 `PIOS_API_URL` + `PIOS_TOKEN`，走平台 `/agent-api/video/*`（默认 `MiniMax-H3` 2K，上游 502 时自动降级到 `doubao-seedance-2-0-mini-260615` 720P 重试一次）。未配置时任务显式失败或标记演示，不回退为假成功。
 - `WECOM_WEBHOOK`、CRM：线索推送进入 outbox，失败可重试；未配置时页面明确提示。
 - 素材：真实公司资料、已授权案例图、平台发布链接由业务负责人提供；演示素材标记为演示。
