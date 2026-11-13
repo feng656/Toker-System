@@ -67,6 +67,14 @@ def test_submit_falls_back_when_primary_upstream_unavailable(monkeypatch):
     assert bodies[1]['resolution'] == '720P'
 
 
+def test_video_prompt_leaves_text_to_post_editing():
+    from app.video_gen import _video_prompt
+    prompt = _video_prompt('报告厅LED大屏选型的关键问题', '<p>✅ 现场勘测与结构核算</p>', 'project')
+    assert '报告厅LED大屏选型' in prompt
+    assert '不要在画面中渲染文字' in prompt
+    assert '画面不要出现任何文字' in prompt
+
+
 @respx.mock
 def test_download_does_not_leak_token_to_cdn(monkeypatch, tmp_path):
     _enable(monkeypatch)

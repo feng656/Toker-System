@@ -215,9 +215,12 @@ def _video_prompt(title: str, body_html: str, biz_line: str) -> str:
         points = [s.strip() for s in re.split(r'[。！？；\n]', body) if 8 <= len(s.strip()) <= 60][:3]
     scene = {"project": "政企项目交付场景", "channel": "工程商合作场景"}.get(biz_line, "LED 显示行业场景")
     lines = [f"竖版 9:16 短视频，{scene}，画面干净专业，深蓝科技感背景配亮色强调。",
-             f"主标题：{title}"]
+             f"内容主题（只用于理解画面，不要在画面中渲染文字）：{title}"]
     if points:
-        lines.append("依次展示卖点：" + "；".join(points[:3]))
-    lines.append("结尾出现品牌信息：云南自由光科技，LED 显示 · 大屏方案 · 工程交付。")
+        lines.append("用镜头依次呈现这些信息对应的场景（不要生成文字或字幕）：" + "；".join(points[:3]))
+    # 平台视频模型画中文大字会缺笔/错字（实测豆包会把“报告厅选型”写成“招督厅选形”），
+    # 成片只出干净画面，标题和卖点由人工在剪辑时叠加。
+    lines.append("画面不要出现任何文字、字幕、标语、水印或电话号码，文字由后期添加。")
+    lines.append("结尾以品牌蓝色光效收束。")
     lines.append("不出现虚构业绩数字、客户名称或价格。")
     return "\n".join(lines)
