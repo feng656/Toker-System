@@ -160,7 +160,7 @@ export default {
       assetsLoading.value = true;
       assetsError.value = '';
       try {
-        assets.value = await phase2Api.assets({ limit: 100 }) || [];
+        assets.value = await phase2Api.assets({ limit: 200 }) || [];
       } catch (e) {
         assetsError.value = errorMessage(e);
         assets.value = [];
@@ -286,7 +286,7 @@ export default {
 
 <template v-else>
   <div v-if="!filtered.length" class="card">
-    <div class="state-box"><el-icon><i class="el-icon-folder-opened" /></el-icon>没有符合条件的素材</div>
+    <div class="state-box"><el-icon><i class="el-icon-folder-opened" /></el-icon>没有符合条件的文字素材；公司照片请切换到「图片媒体（二期 · 公司照片）」查看</div>
   </div>
 
   <div class="card" v-for="m in filtered" :key="m.id">
@@ -332,7 +332,7 @@ export default {
       <span class="muted">共 {{ filteredAssets.length }} / {{ assets.length }} 张</span>
     </div>
     <div v-if="assetsError" class="alert-strip error mt10">{{ assetsError }}</div>
-    <div v-if="!filteredAssets.length && !assetsLoading" class="card">
+    <div v-if="!filteredAssets.length && !assetsLoading && !assetsError" class="card">
       <div class="state-box"><el-icon><i class="el-icon-picture" /></el-icon>还没有图片素材。公司照片上传后会清洗元数据、私有存储，只有「可公开」级别才能发给 AI 生成。</div>
     </div>
     <div class="grid3">

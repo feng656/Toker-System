@@ -5,6 +5,11 @@ os.environ.setdefault('DATABASE_URL', os.getenv('TEST_DATABASE_URL', 'sqlite:///
 os.environ.setdefault('JWT_SECRET', 'test-only-key-not-for-production-0123456789')
 os.environ.setdefault('DEMO_MODE', 'true')
 os.environ.setdefault('SCHEDULER_ENABLED', 'false')
+# 本机 .env 为线上部署打开了扫码适配；测试必须默认关闭，由需要的用例显式 monkeypatch。
+os.environ.setdefault('BROWSER_ENABLED', 'false')
+os.environ.setdefault('BROWSER_ADAPTER_URL', '')
+os.environ.setdefault('BROWSER_ADAPTER_TOKEN', '')
+os.environ.setdefault('ADAPTER_ALLOWED_HOSTS', '')
 
 from pathlib import Path
 import pytest

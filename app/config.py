@@ -23,19 +23,23 @@ WECOM_WEBHOOK = os.getenv('WECOM_WEBHOOK', '')
 CRM_WEBHOOK = os.getenv('CRM_WEBHOOK', '')
 CRM_TOKEN = os.getenv('CRM_TOKEN', '')
 LLM_PROVIDERS = json.loads(os.getenv('LLM_PROVIDERS', '[]'))
-# 平台网关一次四平台长文生成实测约 60s，30s 会稳定超时；默认给足 120s。
-LLM_TIMEOUT = float(os.getenv('LLM_TIMEOUT', '120'))
+# 平台网关一次多平台长文生成实测 60s 左右，推理型模型更慢；默认给足 180s。
+LLM_TIMEOUT = float(os.getenv('LLM_TIMEOUT', '180'))
 # 平台模型网关（OpenAI 兼容）。配置 PIOS_MODEL_KEY 后，未显式给 LLM_PROVIDERS 时自动接入。
 PIOS_GATEWAY_URL = os.getenv('PIOS_GATEWAY_URL', 'https://devhub.supiedt.com/api/v1/model-gateway/v1')
 PIOS_MODEL_KEY = os.getenv('PIOS_MODEL_KEY', '')
-LLM_MODEL = os.getenv('LLM_MODEL', 'deepseek/deepseek-v3.2')
-LLM_FALLBACK_MODEL = os.getenv('LLM_FALLBACK_MODEL', 'qwen/qwen3.7-flash')
+# 文案/评审主模型选平台目录中当前可用、中文长文案最稳的旗舰；备用为同级中文旗舰。
+# 模型目录会轮换，改名或下线时用 scripts/check_ai_models.py 按目录重新核对。
+LLM_MODEL = os.getenv('LLM_MODEL', 'moonshotai/kimi-k3.1-pro')
+LLM_FALLBACK_MODEL = os.getenv('LLM_FALLBACK_MODEL', 'qwen/qwen3.8-2.4t-a95b')
 # 平台视频生成（/agent-api/video/*）。PIOS_API_URL 形如 https://host/api/v1。
 PIOS_API_URL = os.getenv('PIOS_API_URL', '').rstrip('/')
 PIOS_TOKEN = os.getenv('PIOS_TOKEN', '')
 VIDEO_PROVIDER = os.getenv('VIDEO_PROVIDER', 'pios')
+# 平台视频目录里 MiniMax-H3 是当前综合画质最好的通用模型（另有同款参考图变体）；
+# 该模型目录只提供 768P/2K，成片默认用最高 2K，竖屏 9:16 适配短视频平台。
 VIDEO_MODEL = os.getenv('VIDEO_MODEL', 'MiniMax-H3')
-VIDEO_RESOLUTION = os.getenv('VIDEO_RESOLUTION', '768P')
+VIDEO_RESOLUTION = os.getenv('VIDEO_RESOLUTION', '2K')
 VIDEO_ASPECT_RATIO = os.getenv('VIDEO_ASPECT_RATIO', '9:16')
 VIDEO_DURATION_SEC = int(os.getenv('VIDEO_DURATION_SEC', '5'))
 VIDEO_POLL_INTERVAL = float(os.getenv('VIDEO_POLL_INTERVAL', '10'))

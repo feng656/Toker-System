@@ -7,6 +7,13 @@ from app.models import AIJob, ContentVariant, ReviewEvent
 from .conftest import generated
 
 
+def test_model_list_fields_are_normalized_for_storage():
+    from app.generator import _text
+    assert _text(['#LED显示屏', '#项目交付'], 500) == '#LED显示屏 #项目交付'
+    assert _text({'bad': 'shape'}, 500) == ''
+    assert _text('  #单标签  ', 500) == '#单标签'
+
+
 def test_generation_is_idempotent_2_by_4(client, headers):
     variants = generated(client, headers)
     assert len(variants) == 8
