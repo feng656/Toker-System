@@ -6,7 +6,7 @@
 
 ### 平台模型网关（文案生成，推荐默认）
 
-平台网关是OpenAI兼容接口，因此**不需要改 `app/llm.py`**：填 `PIOS_MODEL_KEY`（`pios model key` 自助签发，`mgk-` 开头）后，`LLM_PROVIDERS` 留空即自动生成两条 provider——主模型 `LLM_MODEL`（默认 `deepseek/deepseek-v3.2`）+ 备用 `LLM_FALLBACK_MODEL`（默认 `qwen/qwen3.7-flash`），复用现有故障转移与 ai_jobs 审计。显式配置 `LLM_PROVIDERS` 时以显式配置为准。
+平台网关是OpenAI兼容接口，因此**不需要改 `app/llm.py`**：填 `PIOS_MODEL_KEY`（`pios model key` 自助签发，`mgk-` 开头）后，`LLM_PROVIDERS` 留空即自动生成两条 provider——主模型 `LLM_MODEL`（默认 `moonshotai/kimi-k3.1-pro`）+ 备用 `LLM_FALLBACK_MODEL`（默认 `qwen/qwen3.8-2.4t-a95b`），复用现有故障转移与 ai_jobs 审计。显式配置 `LLM_PROVIDERS` 时以显式配置为准。
 
 ### 平台视频生成（`app/video_provider.py`）
 
@@ -17,7 +17,7 @@
 - 鉴权 `Authorization: Bearer {PIOS_TOKEN}`；`preview_url` 是 `/api/v1/...` 相对路径，下载前拼回 API 根。成片若托管在第三方 CDN（绝对 URL 非平台同源），下载时不携带平台令牌。
 - 每次生成写一条 `ai_jobs(kind='video')`，失败只记异常类型，不落上游正文与凭据。
 - 未配置 `PIOS_API_URL`/`PIOS_TOKEN` 时 `/video/generate` 返回 503；`app/video_gen.py` 的本地海报+ffmpeg 占位视频仅作为显式降级，不冒充真实成片。
-- 默认 `VIDEO_MODEL=MiniMax-H3`、`VIDEO_RESOLUTION=768P`、`VIDEO_ASPECT_RATIO=9:16`（竖版短视频）；需要 1080P 时改 `doubao-seedance-2-0-mini-260615`。
+- 默认 `VIDEO_MODEL=MiniMax-H3`、`VIDEO_RESOLUTION=2K`、`VIDEO_ASPECT_RATIO=9:16`（竖版短视频）；MiniMax-H3 目录仅支持 768P/2K，需要 1080P 时改 `doubao-seedance-2-0-mini-260615`。
 
 ## OCR
 
