@@ -161,12 +161,22 @@ export default {
       assetsError.value = '';
       try {
         assets.value = await phase2Api.assets({ limit: 200 }) || [];
+        await hydrateAssetUrls();
       } catch (e) {
         assetsError.value = errorMessage(e);
         assets.value = [];
       } finally {
         assetsLoading.value = false;
       }
+    }
+
+    /** 签名地址逐张取；限并发，避免一屏 100+ 张时把接口打满。 */
+    async function hydrateAssetUrls() {
+      const queue = assets.value.slice();
+      const workers = Array.from({ length: 6 }, async () => {
+        while (queue.length) await loadAssetUrl(queue.shift());
+      });
+      await Promise.all(workers);
     }
 
     async function loadAssetUrl(a) {
@@ -338,7 +348,8 @@ export default {
     <div class="grid3">
       <div class="card" v-for="a in filteredAssets" :key="a.id">
         <div @mouseenter="loadAssetUrl(a)">
-          <img v-if="assetUrls[a.id]" :src="assetUrls[a.id]" style="width:100%;height:150px;object-fit:cover;border-radius:6px" />
+          <video v-if="assetUrls[a.id] && a.kind === 'video'" :src="assetUrls[a.id]" muted playsinline preload="metadata" style="width:100%;height:150px;object-fit:cover;border-radius:6px;background:#000"></video>
+          <img v-else-if="assetUrls[a.id]" :src="assetUrls[a.id]" loading="lazy" style="width:100%;height:150px;object-fit:cover;border-radius:6px" />
           <div v-else style="width:100%;height:150px;background:#f5f7fa;border-radius:6px;display:flex;align-items:center;justify-content:center" class="muted">预览加载中…</div>
         </div>
         <div class="row mt6" style="justify-content:space-between">
