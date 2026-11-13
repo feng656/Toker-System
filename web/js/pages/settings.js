@@ -312,6 +312,7 @@ export default {
         </el-tag>
         <span v-if="aiStatus.video.configured" class="muted" style="margin-left:8px">
           {{ aiStatus.video.model }} · {{ aiStatus.video.resolution }} · {{ aiStatus.video.aspect_ratio }} · {{ aiStatus.video.duration_sec }}s
+          <template v-if="aiStatus.video.fallback_model">（上游不可用时自动切 {{ aiStatus.video.fallback_model }} · {{ aiStatus.video.fallback_resolution }}）</template>
         </span>
       </span>
       <span v-else class="muted">状态未知</span>

@@ -45,6 +45,29 @@ def test_submit_polls_and_downloads(monkeypatch, tmp_path):
 
 
 @respx.mock
+def test_submit_falls_back_when_primary_upstream_unavailable(monkeypatch):
+    _enable(monkeypatch)
+    monkeypatch.setattr(config, 'VIDEO_MODEL', 'MiniMax-H3')
+    monkeypatch.setattr(config, 'VIDEO_RESOLUTION', '2K')
+    monkeypatch.setattr(config, 'VIDEO_FALLBACK_MODEL', 'doubao-seedance-2-0-mini-260615')
+    monkeypatch.setattr(config, 'VIDEO_FALLBACK_RESOLUTION', '1080P')
+    route = respx.post(API + '/agent-api/video/generate')
+    route.side_effect = [
+        httpx.Response(502, json={'error': {'type': 'upstream_error'}}),
+        httpx.Response(200, json={'success': True, 'data': {
+            'task_id': 5, 'status': 'pending',
+            'model_used': 'doubao-seedance-2-0-mini-260615'}}),
+    ]
+    receipt = submit('竖版短视频')
+    assert receipt['task_id'] == 5
+    import json
+    bodies = [json.loads(call.request.content) for call in route.calls]
+    assert bodies[0]['model'] == 'MiniMax-H3' and bodies[0]['resolution'] == '2K'
+    assert bodies[1]['model'] == 'doubao-seedance-2-0-mini-260615'
+    assert bodies[1]['resolution'] == '1080P'
+
+
+@respx.mock
 def test_download_does_not_leak_token_to_cdn(monkeypatch, tmp_path):
     _enable(monkeypatch)
     route = respx.get('https://cdn.example.test/v/1.mp4').mock(

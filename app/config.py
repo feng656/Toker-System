@@ -40,6 +40,10 @@ VIDEO_PROVIDER = os.getenv('VIDEO_PROVIDER', 'pios')
 # 该模型目录只提供 768P/2K，成片默认用最高 2K，竖屏 9:16 适配短视频平台。
 VIDEO_MODEL = os.getenv('VIDEO_MODEL', 'MiniMax-H3')
 VIDEO_RESOLUTION = os.getenv('VIDEO_RESOLUTION', '2K')
+# 平台上游偶发不可用时自动降级；备用模型目录见 scripts/check_ai_models.py。
+# 2K 是 MiniMax-H3 独有档位，备用模型必须换成它支持的 1080P。
+VIDEO_FALLBACK_MODEL = os.getenv('VIDEO_FALLBACK_MODEL', 'doubao-seedance-2-0-mini-260615')
+VIDEO_FALLBACK_RESOLUTION = os.getenv('VIDEO_FALLBACK_RESOLUTION', '1080P')
 VIDEO_ASPECT_RATIO = os.getenv('VIDEO_ASPECT_RATIO', '9:16')
 VIDEO_DURATION_SEC = int(os.getenv('VIDEO_DURATION_SEC', '5'))
 VIDEO_POLL_INTERVAL = float(os.getenv('VIDEO_POLL_INTERVAL', '10'))

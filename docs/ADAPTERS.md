@@ -18,6 +18,7 @@
 - 每次生成写一条 `ai_jobs(kind='video')`，失败只记异常类型，不落上游正文与凭据。
 - 未配置 `PIOS_API_URL`/`PIOS_TOKEN` 时 `/video/generate` 返回 503；`app/video_gen.py` 的本地海报+ffmpeg 占位视频仅作为显式降级，不冒充真实成片。
 - 默认 `VIDEO_MODEL=MiniMax-H3`、`VIDEO_RESOLUTION=2K`、`VIDEO_ASPECT_RATIO=9:16`（竖版短视频）；MiniMax-H3 目录仅支持 768P/2K，需要 1080P 时改 `doubao-seedance-2-0-mini-260615`。
+- 主模型上游返回 502 时自动用 `VIDEO_FALLBACK_MODEL=doubao-seedance-2-0-mini-260615` + `VIDEO_FALLBACK_RESOLUTION=1080P` 重试一次（2026-11-13 实测 MiniMax-H3 上游 502、豆包可用）；429/503 是排队限流，不触发降级。
 
 ## OCR
 

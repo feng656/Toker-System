@@ -34,6 +34,8 @@ def configured() -> bool:
 def status() -> dict:
     return {'configured': configured(), 'provider': config.VIDEO_PROVIDER,
             'model': config.VIDEO_MODEL, 'resolution': config.VIDEO_RESOLUTION,
+            'fallback_model': config.VIDEO_FALLBACK_MODEL,
+            'fallback_resolution': config.VIDEO_FALLBACK_RESOLUTION,
             'aspect_ratio': config.VIDEO_ASPECT_RATIO, 'duration_sec': config.VIDEO_DURATION_SEC,
             'watermark': config.VIDEO_WATERMARK}
 
@@ -49,26 +51,41 @@ def _api(path: str) -> str:
 def submit(prompt: str, *, duration_sec: Optional[int] = None, resolution: Optional[str] = None,
            aspect_ratio: Optional[str] = None, model: Optional[str] = None,
            ref_image_base64: Optional[str] = None, seed: Optional[int] = None) -> dict:
-    """提交异步视频任务，返回平台受理回执（含 task_id）。"""
+    """提交异步视频任务，返回平台受理回执（含 task_id）。
+
+    主模型上游偶发 502 时自动换备用模型重试一次；429/503 是排队或限流，不重试。
+    """
     if not configured():
         raise VideoUnavailable('未配置平台视频服务（PIOS_API_URL / PIOS_TOKEN）')
-    body: dict = {
-        'async_mode': True,
-        'prompt': prompt,
-        'duration_sec': int(duration_sec or config.VIDEO_DURATION_SEC),
-        'aspect_ratio': aspect_ratio or config.VIDEO_ASPECT_RATIO,
-        'watermark': config.VIDEO_WATERMARK,
-    }
-    if resolution or config.VIDEO_RESOLUTION:
-        body['resolution'] = resolution or config.VIDEO_RESOLUTION
-    if model or config.VIDEO_MODEL:
-        body['model'] = model or config.VIDEO_MODEL
-    if ref_image_base64:
-        body['ref_image_base64'] = ref_image_base64
-    if seed is not None:
-        body['seed'] = seed
-    r = httpx.post(_api('/agent-api/video/generate'), headers=_headers(), json=body,
+
+    def body_for(use_model: str, use_resolution: str) -> dict:
+        body: dict = {
+            'async_mode': True,
+            'prompt': prompt,
+            'duration_sec': int(duration_sec or config.VIDEO_DURATION_SEC),
+            'aspect_ratio': aspect_ratio or config.VIDEO_ASPECT_RATIO,
+            'watermark': config.VIDEO_WATERMARK,
+        }
+        if use_resolution:
+            body['resolution'] = use_resolution
+        if use_model:
+            body['model'] = use_model
+        if ref_image_base64:
+            body['ref_image_base64'] = ref_image_base64
+        if seed is not None:
+            body['seed'] = seed
+        return body
+
+    use_model = model or config.VIDEO_MODEL
+    use_resolution = resolution or config.VIDEO_RESOLUTION
+    r = httpx.post(_api('/agent-api/video/generate'), headers=_headers(),
+                   json=body_for(use_model, use_resolution),
                    timeout=max(config.VIDEO_TIMEOUT, 660.0), follow_redirects=False)
+    if r.status_code == 502 and config.VIDEO_FALLBACK_MODEL and config.VIDEO_FALLBACK_MODEL != use_model:
+        r = httpx.post(_api('/agent-api/video/generate'), headers=_headers(),
+                       json=body_for(config.VIDEO_FALLBACK_MODEL,
+                                     config.VIDEO_FALLBACK_RESOLUTION or use_resolution),
+                       timeout=max(config.VIDEO_TIMEOUT, 660.0), follow_redirects=False)
     if r.status_code in (429, 503):
         retry_after = ''
         try:
@@ -184,6 +201,8 @@ def generate(db: Session, prompt: str, *, out_path: Optional[Path] = None,
                   'object_key': data.get('object_key') or '',
                   'content_id': data.get('content_id')}
         job.status, job.output = 'succeeded', result
+        if result.get('model_used'):
+            job.model = result['model_used']
         return result
     except Exception as exc:
         # 不记录可能携带凭据的异常正文。
