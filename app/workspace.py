@@ -161,8 +161,9 @@ def login(db, account, body, actor_id):
     platform = db.get(Platform, account.platform_id)
     from .login_catalog import check_login_platform
     check_login_platform(platform)
-    if body.login_mode == 'qr' and public_account(account)['qr_available']:
-        return public_account(account)  # 连点/网络重试复用未过期二维码，不重复创建远端会话。
+    # 连点/网络重试默认复用未过期二维码；用户主动刷新传 fresh=true 时重开扫码会话。
+    if body.login_mode == 'qr' and not body.fresh and public_account(account)['qr_available']:
+        return public_account(account)
     if body.login_mode == 'password' and (not body.username or not body.password):
         raise HTTPException(422, '账密登录必须提供账号和密码')
     data = request('accounts/login', {'account_id': account.id, 'platform': platform.code,

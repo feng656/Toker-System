@@ -105,6 +105,9 @@ class AccountLoginIn(Input):
     login_mode: Literal['qr', 'password'] = 'qr'
     username: str = Field(default='', max_length=200)
     password: str = Field(default='', max_length=300)
+    # 用户主动点“扫码登录/重新获取”时必须换一张新码；默认复用未过期二维码
+    # 只用于网络重试等幂等场景，避免把剩余寿命很短的旧码当成新码展示。
+    fresh: bool = False
 
 
 class PublishJobIn(Input):

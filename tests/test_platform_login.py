@@ -110,6 +110,31 @@ def test_refresh_waiting_no_new_image_and_no_audit_spam(client,headers,monkeypat
         assert db.scalar(select(func.count()).select_from(AutomationEvent).where(AutomationEvent.resource=='account'))==1
 
 
+def test_explicit_fresh_login_replaces_valid_qr(client,headers,monkeypatch,image_bytes,fake_storage):
+    import io
+    from PIL import Image
+    monkeypatch.setattr(config,'SESSION_ENCRYPTION_KEY',Fernet.generate_key().decode())
+    a=account(client,headers);seen=[]
+    first=response_qr(image_bytes,'attempt-1')
+    out=io.BytesIO();Image.new('RGB',(120,60),'black').save(out,'PNG')
+    second={'ok':True,'status':'awaiting_scan','attempt_id':'attempt-2',
+            'qr_png_base64':base64.b64encode(out.getvalue()).decode(),
+            'expires_at':(datetime.now(timezone.utc)+timedelta(minutes=3)).isoformat()}
+    def adapter(action,payload,request_key=None):
+        seen.append(action);return first if len(seen)==1 else second
+    monkeypatch.setattr(workspace,'request',adapter)
+    assert client.post(f'/api/v1/workspace/accounts/{a["id"]}/login',headers=headers,json={'login_mode':'qr'}).status_code==200
+    assert len(seen)==1
+    # 默认重试仍复用未过期二维码，避免网络重试重复创建远端会话。
+    assert client.post(f'/api/v1/workspace/accounts/{a["id"]}/login',headers=headers,json={'login_mode':'qr'}).status_code==200
+    assert len(seen)==1
+    # 用户主动刷新必须拿到完整寿命的新码。
+    assert client.post(f'/api/v1/workspace/accounts/{a["id"]}/login',headers=headers,json={'login_mode':'qr','fresh':True}).status_code==200
+    assert len(seen)==2 and len(fake_storage)==2
+    with SessionLocal() as db:
+        assert db.get(WorkspaceAccount,a['id']).login_attempt_id=='attempt-2'
+
+
 def test_refresh_rotated_qr_replaces_stored_image(client,headers,monkeypatch,image_bytes,fake_storage):
     import io
     from PIL import Image

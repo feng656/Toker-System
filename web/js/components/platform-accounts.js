@@ -33,10 +33,14 @@ export default {
     const qrUrl = ref('');
     const qrState = ref('');
     const qrError = ref('');
+    const qrNotice = ref('');
     const now = ref(Date.now());
     let disposed = false;
     let requestEpoch = 0;
     let clock = null;
+    let renewing = false;
+    const MAX_AUTO_RENEW = 6;
+    const autoRenews = ref(0);
     const platformOf = (id) => platforms.value.find(p => p.id === id);
     const qrPlatform = computed(() => platformOf(qrAccount.value?.platform_id));
     const expiryMs = (value) => value ? Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(value) ? value : value + 'Z') : 0;
@@ -107,9 +111,31 @@ export default {
       poller.stop();
       clearClock();
       qrUrl.value = '';
+      qrNotice.value = '';
       qrBusy.value = false;
     }
-    async function applyState(data) {
+    async function renewQr() {
+      if (disposed || !qrVisible.value || !qrAccount.value || renewing) return;
+      if (autoRenews.value >= MAX_AUTO_RENEW) {
+        qrState.value = 'expired';
+        qrUrl.value = '';
+        qrError.value = '二维码多次失效，请点击“重新获取二维码”。';
+        return;
+      }
+      renewing = true;
+      autoRenews.value += 1;
+      qrState.value = 'loading';
+      qrUrl.value = '';
+      qrError.value = '';
+      try {
+        await startQr(qrAccount.value, { auto: true });
+        if (!disposed && qrVisible.value && qrState.value === 'awaiting_scan') {
+          qrNotice.value = '二维码已更新，请使用最新二维码扫码';
+          notify.info('二维码已更新，请使用最新二维码扫码');
+        }
+      } finally { renewing = false; }
+    }
+    async function applyState(data, { allowRenew = false } = {}) {
       qrAccount.value = data;
       qrState.value = data.status;
       qrUrl.value = data.qr_available ? (data.qr_url || '') : '';
@@ -118,18 +144,24 @@ export default {
         poller.stop();
         clearClock();
         qrError.value = '';
+        qrNotice.value = '';
         notify.ok('已登录：' + (data.nickname || data.label));
         await load();
       } else if (data.status === 'expired') {
         poller.stop();
         clearClock();
-        qrError.value = '二维码已过期，请重新获取后扫码。';
+        if (allowRenew && qrVisible.value) await renewQr();
+        else {
+          qrState.value = 'expired';
+          qrUrl.value = '';
+          qrError.value = '二维码已过期，请重新获取后扫码。';
+        }
       }
     }
     const poller = createQrPoller({
       refresh: (id) => phase2Api.wsRefresh(id),
       session: (id) => phase2Api.wsSession(id),
-      onState: applyState,
+      onState: (data) => applyState(data, { allowRenew: true }),
       onError: (error) => { qrError.value = '登录状态查询已暂停：' + errorMessage(error); },
       onLimit: () => { qrError.value = '已暂停自动查询，请点击“继续查询”或重新获取二维码。'; },
     });
@@ -138,16 +170,21 @@ export default {
       clock = window.setInterval(() => {
         now.value = Date.now();
         if (qrState.value === 'awaiting_scan' && !remaining.value) {
-          qrState.value = 'expired';
+          qrState.value = 'loading';
           qrUrl.value = '';
-          qrError.value = '二维码已过期，请重新获取。';
+          qrError.value = '';
           poller.stop();
           clearClock();
+          renewQr();
         }
       }, 1000);
     }
-    async function startQr(account) {
+    async function startQr(account, { auto = false } = {}) {
       if (disposed) return;
+      if (!auto) {
+        autoRenews.value = 0;
+        qrNotice.value = '';
+      }
       closeQr();
       const epoch = requestEpoch;
       qrAccount.value = account;
@@ -156,7 +193,8 @@ export default {
       qrVisible.value = true;
       qrBusy.value = true;
       try {
-        await phase2Api.wsLogin(account.id, { login_mode: 'qr', username: account.login_hint || '' });
+        // 主动获取/自动续码都必须拿一张全新二维码，避免复用剩余寿命很短的旧码。
+        await phase2Api.wsLogin(account.id, { login_mode: 'qr', username: account.login_hint || '', fresh: true });
         if (epoch !== requestEpoch || disposed || !qrVisible.value) return;
         const data = await phase2Api.wsSession(account.id);
         if (epoch !== requestEpoch || disposed || !qrVisible.value) return;
@@ -196,7 +234,7 @@ export default {
     onUnmounted(() => { disposed = true; closeQr(); });
     return { accounts, platforms, loading, loadError, load, isAdmin, openAdd, addVisible, saving, formError,
       form, selected, filtered, search, customMode, customBusy, custom, saveCustom, saveAccount, platformOf,
-      qrVisible, qrBusy, qrAccount, qrUrl, qrState, qrError, remaining, qrPlatform, canRetry,
+      qrVisible, qrBusy, qrAccount, qrUrl, qrState, qrError, qrNotice, remaining, qrPlatform, canRetry,
       startQr, closeQr, resumePoll, refreshAccount, logout, statusName, categoryName, qrStatusName };
   },
   template: `
@@ -269,6 +307,8 @@ export default {
       <img :src="qrUrl" :alt="(qrPlatform?.name || '平台') + '登录二维码'" class="pa-qr-image" @error="qrError = '二维码图片加载失败，请检查存储服务后重试'" />
       <p>请使用 {{ qrPlatform?.name }} 手机端扫码，并在手机上确认登录。</p>
       <div class="muted">剩余 {{ remaining }} 秒 · 扫码人决定实际授权账号</div>
+      <div class="muted">平台约每 60 秒更新一次二维码，系统会自动同步；过期会自动换新码</div>
+      <div v-if="qrNotice" class="muted">{{ qrNotice }}</div>
     </template>
     <div v-else class="state-box">{{ qrState === 'expired' ? '二维码已过期' : '暂未取得登录二维码' }}</div>
     <div v-if="qrError" class="alert-strip warn mt10" role="alert">{{ qrError }}</div>
