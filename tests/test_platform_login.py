@@ -110,6 +110,24 @@ def test_refresh_waiting_no_new_image_and_no_audit_spam(client,headers,monkeypat
         assert db.scalar(select(func.count()).select_from(AutomationEvent).where(AutomationEvent.resource=='account'))==1
 
 
+def test_refresh_rotated_qr_replaces_stored_image(client,headers,monkeypatch,image_bytes,fake_storage):
+    import io
+    from PIL import Image
+    monkeypatch.setattr(config,'SESSION_ENCRYPTION_KEY',Fernet.generate_key().decode())
+    a=account(client,headers);qr=response_qr(image_bytes)
+    monkeypatch.setattr(workspace,'request',lambda *args,**kw:qr)
+    assert client.post(f'/api/v1/workspace/accounts/{a["id"]}/login',headers=headers,json={}).status_code==200
+    out=io.BytesIO();Image.new('RGB',(120,60),'black').save(out,'PNG')
+    # 平台在同一次 attempt 内轮换二维码：expires_at 不变，但图片内容已更新。
+    rotated={**qr,'qr_png_base64':base64.b64encode(out.getvalue()).decode()}
+    monkeypatch.setattr(workspace,'request',lambda *args,**kw:rotated)
+    r=client.post(f'/api/v1/workspace/accounts/{a["id"]}/refresh',headers=headers)
+    assert r.json()['status']=='awaiting_scan'
+    assert len(fake_storage)==2
+    with SessionLocal() as db:
+        assert db.get(WorkspaceAccount,a['id']).qr_object_ref=='s3://test/2'
+
+
 def test_expired_qr_has_no_url_and_refresh_stays_local(client,headers,monkeypatch,image_bytes,fake_storage):
     monkeypatch.setattr(config,'SESSION_ENCRYPTION_KEY',Fernet.generate_key().decode())
     a=account(client,headers)

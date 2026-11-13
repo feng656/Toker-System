@@ -126,8 +126,16 @@ def apply_login(account, data):
                 png = clean_image(base64.b64decode(raw, validate=True))
             except (KeyError, ValueError, HTTPException):
                 raise HTTPException(502, '扫码服务返回的二维码图片无效')
-            # 相同轮询图片不重复保存。
-            if account.login_attempt_id == str(data['attempt_id']) and account.qr_expires_at == expires_at and account.qr_object_ref:
+            # 同一次扫码会话里平台也会轮换二维码；必须按图片内容更新存储。
+            # 只按 attempt_id/expires_at 去重会把新 token 丢掉，前端继续展示旧图，
+            # 手机扫码就会报“该二维码状态错误”。
+            same = False
+            if account.qr_object_ref:
+                try:
+                    same = storage.get(account.qr_object_ref) == png
+                except Exception:
+                    same = False
+            if same:
                 ref = account.qr_object_ref
             else:
                 try:
