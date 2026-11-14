@@ -220,6 +220,13 @@ export default {
         .sort((a, b) => (a.status === 'connected' ? 0 : 1) - (b.status === 'connected' ? 0 : 1));
     });
 
+    const publishHasConnected = computed(() => publishAccounts.value.some((a) => a.status === 'connected'));
+
+    const publishCanSubmit = computed(() => {
+      const a = (publish.accounts || []).find((x) => x.id === publish.accountId);
+      return !!(a && a.status === 'connected');
+    });
+
     async function loadWsAccounts() {
       publish.loadingAccounts = true;
       publish.error = '';
@@ -239,7 +246,7 @@ export default {
       publish.accountId = null;
       publish.open = true;
       await loadWsAccounts();
-      const first = publishAccounts.value.find((a) => a.status === 'connected') || publishAccounts.value[0];
+      const first = publishAccounts.value.find((a) => a.status === 'connected');
       publish.accountId = first ? first.id : null;
     }
 
@@ -992,7 +999,8 @@ export default {
       variantTagType, confirmTagType, publishTagType,
       tab, pfList, vq, vlist, vtotal, vloading, vselected, bulkBusy,
       draftDlg, draftSaving, draftForm,
-      publish, publishEligible, publishAccounts, openPublish, submitPublish, goWorkbench,
+      publish, publishEligible, publishAccounts, publishHasConnected, publishCanSubmit,
+      openPublish, submitPublish, goWorkbench,
       applyVariantFilter, bulkApprove, bulkReject, openDraft, saveDraft, vStatusName,
     };
   },
@@ -1405,6 +1413,12 @@ export default {
   <div v-else-if="!publishAccounts.length" class="alert-strip warn">
     当前平台还没有工作空间账号。请先到「工作台 → 平台通道」添加并扫码登录同平台账号。
   </div>
+  <div v-else-if="!publishHasConnected" class="alert-strip warn">
+    当前平台的账号均未连接（{{
+      publishAccounts.map((a) => a.label + '：' + (a.status === 'expired' ? '登录已过期' : a.status === 'awaiting_scan' ? '待扫码' : '未连接')).join('；')
+    }}）。请先到「工作台 → 平台通道」完成扫码登录，再发起沙盒发布。
+    <div class="mt10"><el-button size="small" @click="goWorkbench">去工作台登录</el-button></div>
+  </div>
   <template v-else>
     <div class="muted mb6">选择已连接的同平台账号（任务提交到沙盒适配器，步骤与截图全程留痕）</div>
     <el-select v-model="publish.accountId" style="width:100%" placeholder="选择工作空间账号">
@@ -1422,7 +1436,7 @@ export default {
   <template #footer>
     <el-button @click="publish.open = false">关闭</el-button>
     <el-button v-if="publish.job" type="primary" @click="goWorkbench">去工作台查看</el-button>
-    <el-button v-else type="primary" :loading="publish.busy" :disabled="!publish.accountId || publish.loadingAccounts" @click="submitPublish">创建发布任务</el-button>
+    <el-button v-else type="primary" :loading="publish.busy" :disabled="!publishCanSubmit || publish.loadingAccounts" @click="submitPublish">创建发布任务</el-button>
   </template>
 </el-dialog>
 
