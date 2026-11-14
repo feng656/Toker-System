@@ -264,6 +264,7 @@ class BrowserManager:
         self._locks: dict[int, asyncio.Lock] = {}
         self._poll_state: dict[int, dict[str, Any]] = {}
         self._reaper: asyncio.Task | None = None
+        self._user_agent = ''
 
     def _lock(self, account_id: int) -> asyncio.Lock:
         return self._locks.setdefault(account_id, asyncio.Lock())
@@ -273,10 +274,25 @@ class BrowserManager:
         self._browser = await self._playwright.chromium.launch(
             executable_path=config.CHROMIUM_PATH,
             headless=True,
-            args=['--no-sandbox', '--disable-dev-shm-usage'],
+            args=[
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled',
+                '--no-first-run',
+                '--no-default-browser-check',
+            ],
         )
+        version = (self._browser.version or '').split('.', 1)[0]
+        if version.isdigit():
+            # 去掉 HeadlessChrome 标记：平台会把无头 UA 当作高风险环境，
+            # 扫码能通过、手机确认阶段却拒绝建立登录态。
+            self._user_agent = (
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+                f'(KHTML, like Gecko) Chrome/{version}.0.0.0 Safari/537.36')
         self._reaper = asyncio.create_task(self._reap())
-        LOG.info('登录适配器浏览器已启动：%s', config.CHROMIUM_PATH)
+        LOG.info('登录适配器浏览器已启动：%s version=%s ua_headless=%s',
+                 config.CHROMIUM_PATH, self._browser.version,
+                 'HeadlessChrome' in self._user_agent)
 
     async def stop(self):
         if self._reaper:
@@ -317,8 +333,50 @@ class BrowserManager:
         page.on('framenavigated', lambda frame: LOG.info(
             '页面跳转 account=%s main=%s url=%s', account_id, frame == page.main_frame,
             frame.url.split('?', 1)[0][:160]))
+        page.on('console', lambda msg: LOG.info(
+            '页面控制台 account=%s type=%s text=%s', account_id, msg.type, msg.text[:300])
+            if msg.type in ('error', 'warning') else None)
+        page.on('pageerror', lambda exc: LOG.info(
+            '页面异常 account=%s error=%s', account_id, str(exc)[:300]))
         page.on('response', lambda response: asyncio.create_task(
             self._log_login_response(account_id, response)))
+
+    @staticmethod
+    def _safe_payload(payload) -> dict:
+        """脱敏后输出响应字段，定位平台返回的失败原因，同时避免落票据。"""
+        if not isinstance(payload, dict):
+            return {'_type': type(payload).__name__}
+        data = payload.get('data')
+        safe = {}
+        if isinstance(data, dict):
+            for key, value in data.items():
+                low = str(key).lower()
+                if any(part in low for part in ('token', 'ticket', 'qrcode', 'url', 'cookie', 'secret', 'sign')):
+                    safe[str(key)] = f'<{type(value).__name__}:{len(str(value))}>'
+                else:
+                    safe[str(key)] = str(value)[:120]
+        elif data is not None:
+            safe['data'] = str(data)[:120]
+        return {'status_code': payload.get('status_code'),
+                'message': str(payload.get('message') or payload.get('msg') or '')[:160],
+                'data': safe}
+
+    async def _capture_login_error(self, account_id: int):
+        """错误响应出现的瞬间抓取弹窗文案，页面随后可能被看门狗重载。"""
+        session = self._sessions.get(account_id)
+        if not session:
+            return
+        try:
+            text = await session.page.evaluate(
+                """() => {
+                    const rows = [...document.querySelectorAll('div,span,p')]
+                      .map(n => (n.innerText || '').trim())
+                      .filter(t => t && t.length < 300 && /登录|二维码|失败|异常|重试|扫码/.test(t));
+                    return [...new Set(rows)].slice(-8).join(' | ');
+                }""")
+            LOG.info('登录弹窗文案 account=%s text=%s', account_id, str(text)[:500])
+        except Exception:
+            LOG.info('登录弹窗文案读取失败 account=%s', account_id)
 
     async def _log_login_response(self, account_id: int, response):
         url = response.url.lower()
@@ -354,6 +412,11 @@ class BrowserManager:
                  account_id, api, response.status,
                  payload.get('status_code') if isinstance(payload, dict) else None,
                  status, host, msg)
+        if api == 'get_qrcode' or msg != 'success' or status not in ('new', 'scanned'):
+            LOG.info('扫码响应字段 account=%s api=%s fields=%s',
+                     account_id, api, self._safe_payload(payload))
+        if api == 'check_qrconnect' and msg == 'error':
+            asyncio.create_task(self._capture_login_error(account_id))
 
     async def _evict_if_needed(self):
         if len(self._sessions) < max(1, config.LOGIN_MAX_BROWSER_SESSIONS):
@@ -382,10 +445,17 @@ class BrowserManager:
                 await previous.close()
             await self._evict_if_needed()
             context = await self._browser.new_context(
-                viewport={'width': 1280, 'height': 900},
+                viewport={'width': 1440, 'height': 900},
                 locale='zh-CN',
                 timezone_id='Asia/Shanghai',
+                user_agent=self._user_agent or None,
+                extra_http_headers={'Accept-Language': 'zh-CN,zh;q=0.9'},
             )
+            # 去除自动化标记，避免平台在手机确认后按风险环境拒绝下发登录态。
+            await context.add_init_script(
+                """Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                   Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh']});
+                   window.chrome = window.chrome || {runtime: {}, app: {isInstalled: false}};""")
             page = await context.new_page()
             page.set_default_timeout(5000)
             self._watch_login_page(page, account_id)
@@ -664,5 +734,6 @@ async def logout(payload: dict = Body(...), authorization: str | None = Header(d
 
 if __name__ == '__main__':
     import uvicorn
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s %(levelname)s %(name)s %(message)s')
     uvicorn.run(app, host='127.0.0.1', port=config.LOGIN_ADAPTER_PORT, workers=1)
