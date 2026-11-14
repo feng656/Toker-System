@@ -389,6 +389,79 @@ def test_refresh_restores_imported_session_after_adapter_restart(monkeypatch):
     assert called and called[0][:2]==(1,'douyin')
 
 
+def test_import_verification_rejects_guest_cookie(monkeypatch):
+    """抖音未登录页面也会下发 sessionid 访客 Cookie，必须用用户接口确认。"""
+    import asyncio
+    from app.login_adapter import BrowserManager
+    manager=BrowserManager()
+    class FakePage:
+        url='https://creator.douyin.com/creator-micro/home'
+        def set_default_timeout(self,*args): pass
+        async def goto(self,*args,**kwargs): pass
+        async def wait_for_timeout(self,*args): pass
+    class FakeContext:
+        async def add_cookies(self,cookies): self.cookies=cookies
+        async def new_page(self): return FakePage()
+        async def close(self): pass
+    async def new_context(): return FakeContext()
+    async def noop(*args,**kwargs): pass
+    async def invalid(session): return {'state':'invalid','error':'用户未登录'}
+    monkeypatch.setattr(manager,'_new_context',new_context)
+    monkeypatch.setattr(manager,'_watch_login_page',lambda *args,**kwargs: None)
+    monkeypatch.setattr(manager,'_evict_if_needed',noop)
+    monkeypatch.setattr(manager,'_user_info',invalid)
+    out=asyncio.run(manager.import_session(9,'douyin',[{'name':'sessionid','value':'x'*20,'domain':'.douyin.com'}]))
+    assert out['status']=='invalid' and '用户未登录' in out['error']
+    assert 9 not in manager._sessions
+
+
+def test_import_verification_accepts_real_user_and_returns_nickname(monkeypatch):
+    import asyncio
+    from app.login_adapter import BrowserManager
+    manager=BrowserManager()
+    class FakePage:
+        url='https://creator.douyin.com/creator-micro/home'
+        def set_default_timeout(self,*args): pass
+        async def goto(self,*args,**kwargs): pass
+        async def wait_for_timeout(self,*args): pass
+    class FakeContext:
+        async def add_cookies(self,cookies): self.cookies=cookies
+        async def new_page(self): return FakePage()
+        async def close(self): pass
+    async def new_context(): return FakeContext()
+    async def noop(*args,**kwargs): pass
+    async def valid(session): return {'state':'ok','nickname':'真实昵称','avatar_url':'https://p3.example/a.jpg'}
+    monkeypatch.setattr(manager,'_new_context',new_context)
+    monkeypatch.setattr(manager,'_watch_login_page',lambda *args,**kwargs: None)
+    monkeypatch.setattr(manager,'_evict_if_needed',noop)
+    monkeypatch.setattr(manager,'_user_info',valid)
+    out=asyncio.run(manager.import_session(9,'douyin',[{'name':'sessionid','value':'x'*20,'domain':'.douyin.com'}]))
+    assert out['status']=='connected' and out['nickname']=='真实昵称'
+    assert out['avatar_url']=='https://p3.example/a.jpg' and len(out['session']['handle'])==32
+    assert 9 in manager._sessions
+
+
+def test_user_info_distinguishes_guest_from_network_error(monkeypatch):
+    import asyncio
+    from app.login_adapter import BrowserManager
+    class Response:
+        def __init__(self,status,data): self.status,self._data=status,data
+        async def json(self): return self._data
+    class Request:
+        def __init__(self,response): self.response=response
+        async def get(self,*args,**kwargs): return self.response
+    class Session:
+        platform='douyin';account_id=1
+        def __init__(self,response): self.context=type('C',(),{'request':Request(response)})()
+    manager=BrowserManager()
+    guest=asyncio.run(manager._user_info(Session(Response(200,{'status_code':8,'status_msg':'用户未登录'}))))
+    assert guest['state']=='invalid' and guest['error']=='用户未登录'
+    ok=asyncio.run(manager._user_info(Session(Response(200,{'status_code':0,'user_info':{'nickname':'枫1','avatar_larger':{'url_list':['https://p3.example/a.jpg']}}}))))
+    assert ok['state']=='ok' and ok['nickname']=='枫1' and ok['avatar_url']=='https://p3.example/a.jpg'
+    down=asyncio.run(manager._user_info(Session(Response(502,{}))))
+    assert down['state']=='unknown'
+
+
 def test_refresh_accepts_late_phone_confirmation_after_qr_expiry(monkeypatch):
     import asyncio,io
     from PIL import Image

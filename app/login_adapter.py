@@ -42,6 +42,9 @@ PLATFORM_CONFIG: dict[str, dict[str, Any]] = {
         'qr_selector': '#douyin_login_comp_scan_code_qrcode img',
         # 二维码若改用 canvas / 背景图渲染，直接截取官方容器兜底。
         'qr_containers': ('#douyin_login_comp_scan_code_qrcode', '#animate_qrcode_container'),
+        # 导入 Cookie 时只认平台同源接口的登录态：未登录时页面也带 sessionid
+        # 访客 Cookie，仅凭 Cookie 名会把无效导入误判成 connected。
+        'user_api': 'https://creator.douyin.com/web/api/media/user/info/',
     },
 }
 
@@ -458,6 +461,59 @@ class BrowserManager:
         return result
 
     @staticmethod
+    def _first_url(value) -> str:
+        if isinstance(value, dict):
+            urls = value.get('url_list') or value.get('urls') or []
+            if isinstance(urls, list) and urls:
+                return str(urls[0])
+            return str(value.get('url') or '')
+        if isinstance(value, list) and value:
+            return str(value[0])
+        return str(value or '')
+
+    @classmethod
+    def _user_fields(cls, data) -> tuple[str, str]:
+        """兼容平台常见用户结构，提取昵称和头像；解析不到就让主 API 用兜底值。"""
+        if not isinstance(data, dict):
+            return '', ''
+        containers = [data.get(k) for k in ('user_info', 'user', 'data', 'current_user')]
+        containers.append(data)
+        for value in containers:
+            if not isinstance(value, dict):
+                continue
+            nickname = str(value.get('nickname') or value.get('user_name') or value.get('name') or '').strip()
+            avatar = cls._first_url(value.get('avatar_uri') or value.get('avatar_url')
+                                    or value.get('avatar_larger') or value.get('avatar_medium')
+                                    or value.get('avatar_thumb'))
+            if nickname:
+                return nickname[:100], avatar[:700]
+        return '', ''
+
+    async def _user_info(self, session: _Session) -> dict:
+        """用平台同源用户接口确认登录态；网络异常与未登录要区分开。"""
+        settings = PLATFORM_CONFIG[session.platform]
+        url = settings.get('user_api')
+        if not url:
+            return {'state': 'unknown'}
+        try:
+            response = await session.context.request.get(url, headers={
+                'Accept': 'application/json', 'Referer': settings['url']})
+            if response.status != 200:
+                return {'state': 'unknown', 'error': f'登录态接口 HTTP {response.status}'}
+            data = await response.json()
+        except Exception:
+            LOG.warning('登录态接口请求失败 account=%s', session.account_id, exc_info=True)
+            return {'state': 'unknown'}
+        if not isinstance(data, dict):
+            return {'state': 'unknown'}
+        code = data.get('status_code')
+        if code not in (0, '0'):
+            message = str(data.get('status_msg') or '').strip()[:80]
+            return {'state': 'invalid', 'error': message or f'status_code={code}'}
+        nickname, avatar = self._user_fields(data)
+        return {'state': 'ok', 'nickname': nickname, 'avatar_url': avatar}
+
+    @staticmethod
     def _cookie_expiry(cookies: list[dict], platform: str) -> datetime:
         now = _now()
         names = set(PLATFORM_CONFIG[platform].get('cookies', ()))
@@ -495,18 +551,24 @@ class BrowserManager:
                 pass
             expires_at = self._cookie_expiry(normalized, platform)
             session = _Session(account_id, platform, '', context, page, None, expires_at)
-            if not await self._logged_in(session):
-                LOG.info('导入 Cookie 未通过平台登录检测 account=%s url=%s',
-                         account_id, page.url.split('?', 1)[0][:160])
+            info = await self._user_info(session)
+            if info.get('state') != 'ok':
+                reason = info.get('error') or ''
+                LOG.info('导入 Cookie 未通过平台登录检测 account=%s url=%s reason=%s',
+                         account_id, page.url.split('?', 1)[0][:160], reason or info.get('state'))
                 await context.close()
-                return {'ok': True, 'status': 'invalid', 'error': 'Cookie 已失效或不属于该平台账号'}
+                message = 'Cookie 已失效或不属于该平台账号'
+                if reason:
+                    message += f'（{reason}）'
+                return {'ok': True, 'status': 'invalid', 'error': message}
             session.handle = uuid.uuid4().hex
-            session.nickname = await self._nickname(session)
+            session.nickname = info.get('nickname') or await self._nickname(session)
             self._sessions[account_id] = session
             LOG.info('导入 Cookie 登录成功 account=%s nickname=%s expires=%s',
                      account_id, session.nickname, _iso(expires_at))
             return {'ok': True, 'status': 'connected', 'session': {'handle': session.handle},
-                    'nickname': session.nickname, 'expires_at': _iso(expires_at)}
+                    'nickname': session.nickname, 'avatar_url': info.get('avatar_url') or '',
+                    'expires_at': _iso(expires_at)}
         except Exception:
             try:
                 await context.close()
