@@ -12,7 +12,8 @@ const qrStatusName = (s) => ({ configured: '可获取平台二维码', unconfigu
 
 export default {
   name: 'PlatformAccounts',
-  setup() {
+  emits: ['changed'],
+  setup(_, { emit }) {
     const accounts = ref([]);
     const platforms = ref([]);
     const loading = ref(false);
@@ -147,6 +148,7 @@ export default {
         qrNotice.value = '';
         notify.ok('已登录：' + (data.nickname || data.label));
         await load();
+        emit('changed');
       } else if (data.status === 'expired') {
         poller.stop();
         clearClock();
@@ -214,6 +216,7 @@ export default {
         const state = await phase2Api.wsRefresh(account.id);
         notify.info('账号状态：' + statusName(state.status));
         await load();
+        emit('changed');
       } catch (error) { notify.err(errorMessage(error)); }
     }
     async function logout(account) {
@@ -221,6 +224,7 @@ export default {
         await window.ElementPlus.ElMessageBox.confirm('确认退出这个平台账号？', '退出平台账号', { type: 'warning' });
         await phase2Api.wsLogout(account.id);
         await load();
+        emit('changed');
       } catch (error) { if (error !== 'cancel' && error !== 'close') notify.err(errorMessage(error)); }
     }
     onMounted(load);
