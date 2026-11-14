@@ -77,6 +77,8 @@ LOGIN_MAX_INFLIGHT = int(os.getenv('LOGIN_MAX_INFLIGHT', '4'))
 SESSION_ENCRYPTION_KEY = os.getenv('SESSION_ENCRYPTION_KEY', '')
 ADAPTER_ALLOWED_HOSTS = [x.strip().lower() for x in os.getenv('ADAPTER_ALLOWED_HOSTS', '').split(',') if x.strip()]
 MEDIA_ALLOWED_HOSTS = [x.strip().lower() for x in os.getenv('MEDIA_ALLOWED_HOSTS', '').split(',') if x.strip()]
+MEDIA_MAX_BYTES = int(os.getenv('MEDIA_MAX_BYTES', str(200 * 1024 * 1024)))
+PUBLISH_DRAFT_TTL_SECONDS = int(os.getenv('PUBLISH_DRAFT_TTL_SECONDS', '1800'))
 PHASE2_WORKER_ENABLED = os.getenv('PHASE2_WORKER_ENABLED', 'false').lower() == 'true'
 AUTOMATION_ENABLED = os.getenv('AUTOMATION_ENABLED', 'false').lower() == 'true'
 AUTOMATION_INTERVAL_SECONDS = int(os.getenv('AUTOMATION_INTERVAL_SECONDS', '60'))

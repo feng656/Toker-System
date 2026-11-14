@@ -88,15 +88,35 @@ fill响应`{"ok":true,"published":false}`只写publish_status=filled；真正发
 
 `POST /v2/accounts/refresh` 新增可选 `session`（库内解密后的 `{handle,cookies,source}`）与 `platform`：适配器进程重启、内存会话丢失时，用 `session.cookies` 重新初始化并返回 `connected`；没有 Cookie 才返回 `expired`。
 
-### 沙盒发布：`publish/prepare`
+### 沙盒发布：`publish/prepare` / `publish/confirm`
 
-`workspace.run_publish` 的 `publish/prepare` 载荷本就包含 `session`（`account_payload` 返回 `{account_id,platform,session}`）。导入的会话形如：
+`app/login_adapter.py` 已内置抖音视频作品的沙盒发布实现，接口均为本地适配器路由：
+`POST /v2/publish/prepare`、`POST /v2/publish/confirm`、`POST /v2/publish/inspect`，都要求
+`Authorization: Bearer BROWSER_ADAPTER_TOKEN`，由主 API 的
+`POST /api/v1/workspace/publish-jobs/{jid}/run|confirm` 调用。
 
-```json
-{"handle":"...","cookies":[{"name":"sessionid","value":"...","domain":".douyin.com","path":"/","secure":true,"httpOnly":true,"sameSite":"None"}],"source":"cookie_import"}
-```
+`publish/prepare` 的行为：
 
-沙盒发布适配器打开 `creator.douyin.com` 前必须 `context.add_cookies(session.cookies)`；若与登录适配器同进程同实例，可直接复用 `session.handle` 对应的上下文。**本仓库只实现登录/校验适配器（`app/login_adapter.py`），`publish/prepare`、`publish/confirm` 由部署侧沙盒发布适配器实现，各平台选择器需单独验收。**
+1. 优先复用 `session.handle` 对应的登录上下文；适配器重启后若无内存会话，则用 `session.cookies`（加密落库的扫码或导入 Cookie）重新初始化并校验登录态。
+2. 只接受 `douyin` + 至少一个视频素材；从 `MEDIA_ALLOWED_HOSTS` 白名单主机下载首个视频，受 `MEDIA_MAX_BYTES` 限制，失败即清理临时文件。
+3. 打开 `creator.douyin.com/creator-micro/content/upload`，通过 `input[type=file]` 上传，等待平台进入作品信息填写状态。
+4. 按 `placeholder` 识别标题/简介输入框；有独立标题位时标题单独填写，否则标题作为简介首行；话题统一补 `#` 后追加。通过输入事件真实写入，并回读确认非空。
+5. 每个关键阶段截取真实页面截图（打开发布页、视频已上传、文案已填写），返回
+   `{"ok":true,"status":"awaiting_confirmation","job_id":"...","confirmation_token":"...","steps":[...]}`。
+   **此步骤绝不点击发布。**
+
+`publish/confirm` 的行为：
+
+- 必须携带 `human_confirmed=true` 和 prepare 返回的 `confirmation_token`；校验失败直接拒绝。
+- 只在人工确认后点击一次发布按钮；若上次已点击过，只核对结果，不重复点击，避免重复作品。
+- 仅当发布创建接口返回 `aweme_id`，或页面跳转到 `https://www.douyin.com/video/{id}` 时，才返回
+  `{"ok":true,"status":"published","url":"https://www.douyin.com/video/{id}","steps":[...]}`。
+- 已点击但拿不到公开链接时返回 `status=uncertain` 且不带 `url`；主 API 不会把任务标记成功，保留
+  `awaiting_confirmation` 供人工核对平台作品管理后处理。
+- 成功响应会缓存到幂等键（`Idempotency-Key`，主 API 使用
+  `publish:{request_key}:prepare|confirm`）；适配器重启会丢失内存中的草稿页和确认凭证，此时须取消任务并重新预览，不能盲目重发。
+
+限制与维护边界：当前只接入抖音视频作品；封面使用平台默认首帧，不做 OCR、不绕过验证码/风控；平台改版导致选择器失效时，`publish/prepare` 会明确失败而不是伪报成功，可用 `POST /api/v1/workspace/accounts/{aid}/publish-inspect` 重新抓取页面结构后再调整选择器。发布草稿默认在内存保留 `PUBLISH_DRAFT_TTL_SECONDS=1800` 秒，超时自动关页并删除临时视频。
 
 ## 官方发布（实验、默认关闭）
 

@@ -197,7 +197,7 @@ def test_publish_preparation_confirmation_and_idempotence(client,headers,connect
     j=post(client,headers,'/workspace/publish-jobs',{'request_key':'publish-1','account_id':connected,'variant_id':v['id']},201)
     evidence=[{'name':'preview','status':'ok','screenshot_png_base64':base64.b64encode(image_bytes).decode()}]
     calls=[]
-    def adapter(action,payload,key=None):
+    def adapter(action,payload,key=None,**kwargs):
         calls.append((action,key))
         if action=='publish/prepare':
             assert payload['submit'] is False

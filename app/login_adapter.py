@@ -8,10 +8,14 @@
 """
 import asyncio
 import base64
+import hashlib
 import hmac
 import io
 import json
 import logging
+import os
+import re
+import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -19,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlsplit
 
+import httpx
 from fastapi import Body, FastAPI, Header, HTTPException
 from PIL import Image, ImageStat, UnidentifiedImageError
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
@@ -79,6 +84,92 @@ PUBLISH_INSPECT_JS = r"""
 }
 """
 
+PUBLISH_FIELD_JS = r"""
+() => {
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+  };
+  const placeholder = (el) => (
+    el.getAttribute('placeholder') || el.getAttribute('data-placeholder') ||
+    el.getAttribute('data-placeholder-text') || ''
+  ).trim();
+  const items = Array.from(document.querySelectorAll(
+    '[contenteditable=true], textarea, input[type=text]'
+  )).filter(visible);
+  let title = null;
+  let caption = null;
+  for (const el of items) {
+    const ph = placeholder(el);
+    if (!title && /标题/.test(ph)) { title = el; continue; }
+    if (!caption && /简介|描述|正文|说点什么|作品内容|添加作品/.test(ph)) { caption = el; continue; }
+  }
+  if (!caption) {
+    let area = 0;
+    for (const el of items) {
+      if (el === title) continue;
+      const r = el.getBoundingClientRect();
+      const size = r.width * r.height;
+      if (size > area) { area = size; caption = el; }
+    }
+  }
+  if (title) title.setAttribute('data-toker-field', 'title');
+  if (caption) caption.setAttribute('data-toker-field', 'caption');
+  const read = (el) => el ? String(el.innerText || el.value || '').trim() : '';
+  return {
+    title: !!title,
+    caption: !!caption,
+    title_text: read(title).slice(0, 200),
+    caption_text: read(caption).slice(0, 500),
+    placeholders: items.map(placeholder).filter(Boolean).slice(0, 12),
+  };
+}
+"""
+
+PUBLISH_BUTTON_JS = r"""
+() => {
+  const words = new Set(['发布', '立即发布']);
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+  };
+  document.querySelectorAll('[data-toker-publish-button]').forEach(
+    (el) => el.removeAttribute('data-toker-publish-button'));
+  const buttons = Array.from(document.querySelectorAll('button, [role=button]')).filter(visible);
+  const mark = (el) => {
+    el.setAttribute('data-toker-publish-button', '1');
+    return {found: true, disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+            text: (el.innerText || '').trim()};
+  };
+  const exact = buttons.find((el) => words.has((el.innerText || '').trim()));
+  if (exact) return mark(exact);
+  const fuzzy = buttons.find((el) => {
+    const text = (el.innerText || '').trim();
+    return text.includes('发布') && !text.includes('设置') && !text.includes('管理') && text.length <= 8;
+  });
+  return fuzzy ? mark(fuzzy) : {found: false};
+}
+"""
+
+DISMISS_OVERLAY_JS = r"""
+() => {
+  const words = new Set(['我知道了', '知道了', '跳过', '暂不', '以后再说']);
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+  };
+  const buttons = Array.from(document.querySelectorAll('button, [role=button]')).filter(visible);
+  for (const el of buttons) {
+    const text = (el.innerText || '').trim();
+    if (words.has(text)) { el.click(); return text; }
+  }
+  return '';
+}
+"""
+
 QR_SCAN_JS = r"""
 () => {
   const square = (w, h) => w >= 90 && h >= 90 && Math.abs(w - h) <= Math.max(18, w * 0.16);
@@ -115,6 +206,51 @@ def _now() -> datetime:
 
 def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+VIDEO_SUFFIXES = ('.mp4', '.mov', '.webm', '.m4v', '.mkv', '.avi')
+PUBLISH_URL_RE = re.compile(r'douyin\.com/video/(\d{10,25})')
+AWEME_ID_PATTERNS = (
+    re.compile(r'"aweme_id"\s*:\s*"?(\d{15,25})'),
+    re.compile(r'"item_id"\s*:\s*"?(\d{15,25})'),
+    re.compile(r'"video_id"\s*:\s*"?(\d{15,25})'),
+)
+
+
+def _video_asset(assets) -> dict | None:
+    for asset in assets or []:
+        if not isinstance(asset, dict):
+            continue
+        url = str(asset.get('url') or '')
+        path = urlsplit(url).path.lower()
+        kind = str(asset.get('kind') or '').lower()
+        if kind in ('video', 'video/mp4') or path.endswith(VIDEO_SUFFIXES):
+            return asset
+    return None
+
+
+def _compose_caption(title: str, body: str, hashtags: str) -> str:
+    """抖音没有独立标题位时，标题作为文案首行；有标题位时只填正文+话题。"""
+    tags = ' '.join(part if part.startswith('#') else '#' + part
+                    for part in str(hashtags or '').replace(',', ' ').split())
+    text = str(body or '').strip()
+    if title and title not in text:
+        text = f'{title}\n{text}'.strip()
+    return (text + ('\n\n' + tags if tags else '')).strip()[:2000]
+
+
+def _publish_fingerprint(payload: dict) -> str:
+    assets = []
+    for asset in payload.get('assets') or []:
+        if isinstance(asset, dict):
+            # 签名地址每次都会变，只取稳定的路径部分做内容指纹。
+            assets.append({'kind': asset.get('kind'), 'path': urlsplit(str(asset.get('url') or '')).path})
+    canonical = json.dumps({
+        'account_id': payload.get('account_id'), 'platform': payload.get('platform'),
+        'variant_id': payload.get('variant_id'), 'title': payload.get('title'),
+        'body': payload.get('body'), 'hashtags': payload.get('hashtags'), 'assets': assets,
+    }, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _png(raw: bytes) -> bytes | None:
@@ -297,6 +433,9 @@ class BrowserManager:
         self._sessions: dict[int, _Session] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._poll_state: dict[int, dict[str, Any]] = {}
+        self._publishes: dict[str, dict[str, Any]] = {}
+        self._publish_by_account: dict[int, str] = {}
+        self._publish_idempotency: dict[str, tuple[float, dict]] = {}
         self._reaper: asyncio.Task | None = None
         self._user_agent = ''
 
@@ -361,6 +500,17 @@ class BrowserManager:
                             self._sessions.pop(account_id, None)
                             self._poll_state.pop(account_id, None)
                             await session.close()
+            for draft in list(self._publishes.values()):
+                if draft.get('busy'):
+                    continue
+                age = (now - draft['created_at']).total_seconds()
+                if age <= max(60, config.PUBLISH_DRAFT_TTL_SECONDS):
+                    continue
+                # 草稿页长期占着浏览器内存：超时后关页并删除临时视频，
+                # 已保存到后端的内容与截图不受影响。
+                async with self._lock(draft['account_id']):
+                    if self._publishes.get(draft['job_id']) is draft and not draft.get('busy'):
+                        await self._drop_publish(draft)
 
     def _watch_login_page(self, page: Page, account_id: int):
         """记录扫码链路的关键节点，不记录 Cookie 值、二维码 token 或跳转票据。"""
@@ -544,6 +694,18 @@ class BrowserManager:
         nickname, avatar = self._user_fields(data)
         return {'state': 'ok', 'nickname': nickname, 'avatar_url': avatar}
 
+    async def _session_payload(self, session: _Session) -> dict:
+        """把已登录 Cookie 一并交给后端加密保存，适配器重启后才能恢复会话。"""
+        result = {'handle': session.handle}
+        try:
+            cookies = self._playwright_cookies(await session.context.cookies())
+        except Exception:
+            cookies = []
+        if cookies:
+            result['cookies'] = cookies
+            result['source'] = 'qr_login'
+        return result
+
     @staticmethod
     def _cookie_expiry(cookies: list[dict], platform: str) -> datetime:
         now = _now()
@@ -597,7 +759,8 @@ class BrowserManager:
             self._sessions[account_id] = session
             LOG.info('导入 Cookie 登录成功 account=%s nickname=%s expires=%s',
                      account_id, session.nickname, _iso(expires_at))
-            return {'ok': True, 'status': 'connected', 'session': {'handle': session.handle},
+            return {'ok': True, 'status': 'connected',
+                    'session': await self._session_payload(session),
                     'nickname': session.nickname, 'avatar_url': info.get('avatar_url') or '',
                     'expires_at': _iso(expires_at)}
         except Exception:
@@ -761,7 +924,7 @@ class BrowserManager:
                 return {
                     'ok': True,
                     'status': 'connected',
-                    'session': {'handle': session.handle},
+                    'session': await self._session_payload(session),
                     'nickname': session.nickname,
                     'expires_at': _iso(min(session.expires_at, _now() + timedelta(
                         hours=max(1, config.LOGIN_SESSION_TTL_HOURS)))),
@@ -776,7 +939,7 @@ class BrowserManager:
                 return {
                     'ok': True,
                     'status': 'connected',
-                    'session': {'handle': session.handle},
+                    'session': await self._session_payload(session),
                     'nickname': session.nickname,
                     'expires_at': _iso(_now() + timedelta(hours=max(1, config.LOGIN_SESSION_TTL_HOURS))),
                 }
@@ -813,7 +976,7 @@ class BrowserManager:
                         return {
                             'ok': True,
                             'status': 'connected',
-                            'session': {'handle': session.handle},
+                            'session': await self._session_payload(session),
                             'nickname': session.nickname,
                             'expires_at': _iso(now + timedelta(hours=max(1, config.LOGIN_SESSION_TTL_HOURS))),
                         }
@@ -838,6 +1001,461 @@ class BrowserManager:
             if changed:
                 data['qr_png_base64'] = base64.b64encode(fresh).decode()
             return data
+
+    def _cache_get(self, key: str) -> dict | None:
+        item = self._publish_idempotency.get(key)
+        if not item:
+            return None
+        expires, value = item
+        if expires <= time.monotonic():
+            self._publish_idempotency.pop(key, None)
+            return None
+        return value
+
+    def _cache_put(self, key: str, value: dict):
+        now = time.monotonic()
+        if len(self._publish_idempotency) >= 60:
+            oldest = sorted(self._publish_idempotency.items(), key=lambda item: item[1][0])[:20]
+            for old_key, _ in oldest:
+                self._publish_idempotency.pop(old_key, None)
+        self._publish_idempotency[key] = (now + max(60, config.PUBLISH_DRAFT_TTL_SECONDS), value)
+
+    async def _drop_publish(self, draft: dict):
+        job_id = str(draft.get('job_id') or '')
+        account_id = draft.get('account_id')
+        self._publishes.pop(job_id, None)
+        if account_id is not None and self._publish_by_account.get(account_id) == job_id:
+            self._publish_by_account.pop(account_id, None)
+        page = draft.get('page')
+        if page:
+            try:
+                await page.close()
+            except Exception:
+                LOG.warning('关闭发布草稿页失败 job=%s', job_id, exc_info=True)
+        path = draft.get('video_path')
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    async def _publish_session(self, account_id: int, platform: str, session_payload) -> _Session:
+        session = self._sessions.get(account_id)
+        if session and session.handle:
+            return session
+        cookies = session_payload.get('cookies') if isinstance(session_payload, dict) else None
+        if cookies:
+            restored = await self._import_locked(account_id, platform, cookies)
+            session = self._sessions.get(account_id)
+            if restored.get('status') == 'connected' and session:
+                LOG.info('发布前用加密会话恢复登录成功 account=%s', account_id)
+                return session
+            reason = str(restored.get('error') or '').strip()
+            raise AdapterError('保存的账号会话已失效，请重新登录' + (f'（{reason}）' if reason else ''))
+        raise AdapterError('账号会话不在线，请重新登录')
+
+    async def _download_video(self, url: str) -> str:
+        """只从配置的公开素材主机下载视频，限制大小并在失败时清理临时文件。"""
+        parts = urlsplit(url)
+        host = (parts.hostname or '').lower()
+        if parts.scheme not in ('http', 'https') or not host or parts.username or parts.password:
+            raise AdapterError('视频素材地址无效')
+        if host not in config.MEDIA_ALLOWED_HOSTS:
+            raise AdapterError(f'视频素材主机不在发布白名单：{host}')
+        suffix = os.path.splitext(parts.path)[1].lower()
+        if suffix not in VIDEO_SUFFIXES:
+            suffix = '.mp4'
+        fd, path = tempfile.mkstemp(prefix='toker-publish-', suffix=suffix)
+        os.close(fd)
+        total = 0
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=15.0),
+                                         follow_redirects=False) as client:
+                async with client.stream('GET', url) as response:
+                    if response.status_code != 200:
+                        raise AdapterError(f'视频素材下载失败（HTTP {response.status_code}）')
+                    length = str(response.headers.get('content-length') or '')
+                    if length.isdigit() and int(length) > config.MEDIA_MAX_BYTES:
+                        raise AdapterError('视频素材超过大小上限')
+                    with open(path, 'wb') as handle:
+                        async for chunk in response.aiter_bytes(64 * 1024):
+                            total += len(chunk)
+                            if total > config.MEDIA_MAX_BYTES:
+                                raise AdapterError('视频素材超过大小上限')
+                            handle.write(chunk)
+            if total <= 0:
+                raise AdapterError('视频素材为空')
+            LOG.info('发布视频已下载 host=%s bytes=%s', host, total)
+            return path
+        except Exception:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise
+
+    @staticmethod
+    async def _publish_step(page: Page, name: str, status: str = 'ok') -> dict:
+        item: dict[str, Any] = {'name': name[:100], 'status': status[:30]}
+        try:
+            raw = await page.screenshot(type='jpeg', quality=70, timeout=10000)
+            if raw:
+                item['screenshot_png_base64'] = base64.b64encode(raw).decode()
+        except Exception:
+            LOG.warning('发布步骤截图失败 step=%s', name, exc_info=True)
+        return item
+
+    async def _open_publish_page(self, session: _Session, settings: dict) -> Page:
+        page = await session.context.new_page()
+        page.set_default_timeout(15000)
+        try:
+            await page.goto(settings['publish_url'], wait_until='domcontentloaded', timeout=35000)
+            await page.wait_for_timeout(3500)
+            await page.evaluate(DISMISS_OVERLAY_JS)
+            body = ''
+            try:
+                body = await page.inner_text('body', timeout=5000)
+            except Exception:
+                pass
+            if '扫码登录' in body or '验证码登录' in body or '/login' in page.url:
+                raise AdapterError('账号登录态已失效，请重新登录')
+            await page.wait_for_selector('input[type=file]', state='attached', timeout=20000)
+            return page
+        except Exception:
+            try:
+                await page.close()
+            except Exception:
+                pass
+            raise
+
+    @staticmethod
+    async def _pick_file_input(page: Page):
+        inputs = page.locator('input[type=file]')
+        count = await inputs.count()
+        fallback = None
+        for index in range(count):
+            element = inputs.nth(index)
+            accept = (await element.get_attribute('accept') or '').lower()
+            if 'video' in accept or any(ext.lstrip('.') in accept for ext in VIDEO_SUFFIXES):
+                return element
+            if fallback is None:
+                fallback = element
+        return fallback
+
+    async def _wait_upload(self, page: Page, timeout: float = 150):
+        deadline = time.monotonic() + timeout
+        stable = 0
+        while time.monotonic() < deadline:
+            await page.wait_for_timeout(2500)
+            try:
+                info = await page.evaluate(PUBLISH_INSPECT_JS)
+            except Exception:
+                continue
+            text = str(info.get('text') or '')
+            for marker in ('上传失败', '解析失败', '不支持该视频格式', '视频格式不支持'):
+                if marker in text:
+                    raise AdapterError('视频上传失败：' + marker)
+            fields = await page.evaluate(PUBLISH_FIELD_JS)
+            button = await page.evaluate(PUBLISH_BUTTON_JS)
+            ready = button.get('found') and not button.get('disabled')
+            success_text = '上传成功' in text or '重新上传' in text
+            if fields.get('caption') and (ready or success_text):
+                # 连续两次观测到可发布，避开上传进度到 100% 但平台仍在转码的瞬间。
+                stable = stable + 1 if ready else 0
+                if stable >= 2 or success_text:
+                    await page.wait_for_timeout(1800)
+                    return
+            else:
+                stable = 0
+        raise AdapterError('视频上传超时，未进入作品信息填写页')
+
+    @staticmethod
+    async def _fill_editable(element, text: str):
+        try:
+            await element.click(timeout=8000)
+            await element.fill(text, timeout=8000)
+        except Exception:
+            await element.click(timeout=8000)
+            await element.press('Control+A')
+            await element.type(text, delay=5)
+
+    async def _fill_fields(self, page: Page, title: str, body: str,
+                           hashtags: str) -> tuple[bool, str]:
+        info = await page.evaluate(PUBLISH_FIELD_JS)
+        if not info.get('caption'):
+            await page.wait_for_timeout(3000)
+            info = await page.evaluate(PUBLISH_FIELD_JS)
+        if not info.get('caption'):
+            raise AdapterError('发布页未找到作品简介输入框，页面结构可能已变化')
+        title_filled = bool(title and info.get('title'))
+        if title_filled:
+            await self._fill_editable(page.locator('[data-toker-field="title"]').first, title[:100])
+        # 页面有独立标题位时不再把标题塞进简介，避免同一句话出现两次。
+        caption = _compose_caption('' if title_filled else title, body, hashtags)
+        await self._fill_editable(page.locator('[data-toker-field="caption"]').first, caption)
+        try:
+            await page.keyboard.press('Escape')
+        except Exception:
+            pass
+        await page.wait_for_timeout(1000)
+        readback = str(await page.evaluate(
+            "() => { const el = document.querySelector('[data-toker-field=caption]');"
+            " return el ? String(el.innerText || el.value || '').trim() : ''; }") or '')
+        if not readback:
+            raise AdapterError('作品简介写入失败，页面结构可能已变化')
+        return title_filled, readback
+
+    @staticmethod
+    async def _capture_publish_response(response, bag: list[str]):
+        try:
+            url = response.url.lower()
+            # 只认发布创建接口，避免页面后台推荐流里的旧作品 ID 被误当成本次结果。
+            if response.status != 200 or 'create' not in url:
+                return
+            if 'aweme' not in url and 'publish' not in url:
+                return
+            text = await response.text()
+            if not text or len(text) > 500_000:
+                return
+            for pattern in AWEME_ID_PATTERNS:
+                match = pattern.search(text)
+                if match:
+                    bag.append(match.group(1))
+                    return
+            match = PUBLISH_URL_RE.search(text)
+            if match:
+                bag.append(match.group(1))
+        except Exception:
+            pass
+
+    @staticmethod
+    async def _extract_public_url(page: Page, bag: list[str]) -> str:
+        # 只接受发布接口返回的作品 ID 或平台跳转后的作品页；不用页面里的任意链接，
+        # 避免把账号下其他旧作品误记为本条内容的发布地址。
+        if bag:
+            return f'https://www.douyin.com/video/{bag[0]}'
+        match = PUBLISH_URL_RE.search(page.url)
+        if match:
+            return f'https://www.douyin.com/video/{match.group(1)}'
+        return ''
+
+    @staticmethod
+    async def _confirm_dialog(page: Page):
+        try:
+            clicked = await page.evaluate(r"""
+                () => {
+                  const words = new Set(['确认发布', '继续发布']);
+                  const visible = (el) => {
+                    const r = el.getBoundingClientRect();
+                    const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                  };
+                  const buttons = Array.from(document.querySelectorAll('button, [role=button]')).filter(visible);
+                  const target = buttons.find((el) => words.has((el.innerText || '').trim()));
+                  if (target) { target.click(); return true; }
+                  const dialogs = Array.from(document.querySelectorAll(
+                    '[role=dialog], [class*=modal], [class*=Modal], [class*=dialog], [class*=Dialog]'));
+                  for (const dialog of dialogs) {
+                    const inDialog = Array.from(dialog.querySelectorAll('button, [role=button]')).filter(visible);
+                    const confirm = inDialog.find((el) => {
+                      const text = (el.innerText || '').trim();
+                      return text === '发布' || words.has(text);
+                    });
+                    if (confirm) { confirm.click(); return true; }
+                  }
+                  return false;
+                }
+            """)
+            if clicked:
+                LOG.info('已点击平台发布二次确认')
+                await page.wait_for_timeout(1500)
+        except Exception:
+            pass
+
+    async def _wait_published(self, page: Page, bag: list[str], timeout: float = 25) -> str:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            await page.wait_for_timeout(2000)
+            try:
+                url = await self._extract_public_url(page, bag)
+            except Exception:
+                url = ''
+            if url:
+                return url
+            try:
+                text = await page.inner_text('body', timeout=3000)
+            except Exception:
+                text = ''
+            if any(word in text for word in ('发布成功', '作品发布成功', '发布完成')):
+                await page.wait_for_timeout(3000)
+                try:
+                    url = await self._extract_public_url(page, bag)
+                except Exception:
+                    url = ''
+                if url:
+                    return url
+        return ''
+
+    async def publish_prepare(self, payload: dict, idempotency_key: str = '') -> dict:
+        """上传视频并填入文案，停在发布按钮前；绝不在此步骤点击发布。"""
+        account_id = int(payload.get('account_id'))
+        platform = str(payload.get('platform') or '')
+        settings = PLATFORM_CONFIG.get(platform)
+        if platform != 'douyin' or not settings or not settings.get('publish_url'):
+            raise AdapterError('当前仅接入抖音视频发布')
+        title = str(payload.get('title') or '').strip()[:100]
+        body = str(payload.get('body') or '').strip()
+        hashtags = str(payload.get('hashtags') or '').strip()
+        if not title and not body:
+            raise AdapterError('作品文案为空，无法预览发布')
+        video = _video_asset(payload.get('assets'))
+        if not video:
+            raise AdapterError('视频发布需要至少一个视频素材；请先在内容页上传视频并重新审核')
+        fingerprint = _publish_fingerprint(payload)
+        if idempotency_key:
+            cached = self._cache_get(idempotency_key)
+            draft = self._publishes.get(str((cached or {}).get('job_id') or ''))
+            if cached and draft and not draft['page'].is_closed():
+                return cached
+        async with self._lock(account_id):
+            if idempotency_key:
+                cached = self._cache_get(idempotency_key)
+                draft = self._publishes.get(str((cached or {}).get('job_id') or ''))
+                if cached and draft and not draft['page'].is_closed():
+                    return cached
+            existing_id = self._publish_by_account.get(account_id)
+            existing = self._publishes.get(existing_id) if existing_id else None
+            if existing and existing['fingerprint'] == fingerprint and not existing['page'].is_closed():
+                response = existing['response']
+                if idempotency_key:
+                    self._cache_put(idempotency_key, response)
+                return response
+            if existing:
+                await self._drop_publish(existing)
+            session = await self._publish_session(account_id, platform, payload.get('session'))
+            video_path = await self._download_video(str(video['url']))
+            page = None
+            try:
+                page = await self._open_publish_page(session, settings)
+                steps = [await self._publish_step(page, '打开发布页')]
+                file_input = await self._pick_file_input(page)
+                if file_input is None:
+                    raise AdapterError('发布页未找到视频上传入口')
+                await file_input.set_input_files(video_path)
+                await self._wait_upload(page)
+                steps.append(await self._publish_step(page, '视频已上传'))
+                title_filled, readback = await self._fill_fields(page, title, body, hashtags)
+                steps.append(await self._publish_step(page, '文案已填写'))
+                button = await page.evaluate(PUBLISH_BUTTON_JS)
+                if not button.get('found'):
+                    raise AdapterError('发布页未找到发布按钮，页面结构可能已变化')
+                if button.get('disabled'):
+                    raise AdapterError('发布按钮尚不可用，视频可能仍在上传或平台校验未完成')
+                job_id = uuid.uuid4().hex
+                response = {
+                    'ok': True, 'status': 'awaiting_confirmation',
+                    'job_id': job_id, 'confirmation_token': uuid.uuid4().hex,
+                    'steps': steps,
+                    'filled': {'title': title_filled, 'caption_chars': len(readback)},
+                    'note': '已上传视频并填入文案，未点击发布；等待人工确认',
+                }
+                self._publishes[job_id] = {
+                    'job_id': job_id, 'token': response['confirmation_token'],
+                    'account_id': account_id, 'platform': platform,
+                    'variant_id': payload.get('variant_id'), 'fingerprint': fingerprint,
+                    'page': page, 'video_path': video_path, 'response': response,
+                    'created_at': _now(), 'busy': False, 'clicked': False,
+                    'published_url': '', 'confirm_response': None,
+                }
+                self._publish_by_account[account_id] = job_id
+                if idempotency_key:
+                    self._cache_put(idempotency_key, response)
+                LOG.info('发布草稿已就绪 account=%s job=%s title=%s caption_chars=%s',
+                         account_id, job_id, title_filled, len(readback))
+                return response
+            except Exception:
+                if page:
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+                try:
+                    os.unlink(video_path)
+                except OSError:
+                    pass
+                raise
+
+    async def publish_confirm(self, payload: dict, idempotency_key: str = '') -> dict:
+        """人工确认后点击发布，只把平台返回的真实公开链接当作成功。"""
+        if payload.get('human_confirmed') is not True:
+            raise AdapterError('必须由人工确认后才能发布')
+        account_id = int(payload.get('account_id'))
+        remote_job_id = str(payload.get('remote_job_id') or '')
+        token = str(payload.get('confirmation_token') or '')
+        if not remote_job_id or not token:
+            raise AdapterError('发布确认参数不完整，请重新预览')
+        fallback_key = f'job:{remote_job_id}:confirm'
+        cache_key = idempotency_key or fallback_key
+        for key in (cache_key, fallback_key):
+            cached = self._cache_get(key)
+            if cached and cached.get('status') == 'published':
+                return cached
+        async with self._lock(account_id):
+            for key in (cache_key, fallback_key):
+                cached = self._cache_get(key)
+                if cached and cached.get('status') == 'published':
+                    return cached
+            draft = self._publishes.get(remote_job_id)
+            if not draft:
+                raise AdapterError('发布草稿已过期或适配器已重启，请取消任务后重新预览')
+            if draft['account_id'] != account_id:
+                raise AdapterError('发布草稿与账号不匹配，请重新预览')
+            if not hmac.compare_digest(str(draft['token']), token):
+                raise AdapterError('发布确认凭证无效，请重新预览')
+            page = draft['page']
+            if page.is_closed():
+                raise AdapterError('发布页面已关闭，请取消任务后重新预览')
+            draft['busy'] = True
+            try:
+                steps = [await self._publish_step(page, '确认发布前')]
+                bag: list[str] = draft.setdefault('bag', [])
+                if draft.get('clicked'):
+                    # 上次已经点过发布：只核对结果，绝不重复点击造成重复作品。
+                    url = await self._wait_published(page, bag, timeout=20)
+                else:
+                    button = await page.evaluate(PUBLISH_BUTTON_JS)
+                    if not button.get('found'):
+                        raise AdapterError('发布页未找到发布按钮，请取消任务后重新预览')
+                    if button.get('disabled'):
+                        raise AdapterError('发布按钮尚不可用，请稍后重试或重新预览')
+                    page.on('response', lambda response: asyncio.create_task(
+                        self._capture_publish_response(response, bag)))
+                    draft['clicked'] = True
+                    await page.locator('[data-toker-publish-button="1"]').first.click(timeout=10000)
+                    await page.wait_for_timeout(3000)
+                    await page.evaluate(DISMISS_OVERLAY_JS)
+                    await self._confirm_dialog(page)
+                    url = await self._wait_published(page, bag, timeout=25)
+                steps.append(await self._publish_step(
+                    page, '发布结果', 'published' if url else 'uncertain'))
+                if not url:
+                    response = {
+                        'ok': True, 'status': 'uncertain', 'url': '', 'steps': steps,
+                        'error': '已点击发布但未取得公开链接，请到平台作品管理核对后人工处理',
+                    }
+                    draft['confirm_response'] = response
+                    return response
+                response = {'ok': True, 'status': 'published', 'url': url, 'steps': steps}
+                draft['published_url'] = url
+                draft['confirm_response'] = response
+                self._cache_put(cache_key, response)
+                self._cache_put(fallback_key, response)
+                LOG.info('发布成功 account=%s job=%s url_host=%s',
+                         account_id, remote_job_id, urlsplit(url).hostname)
+                await self._drop_publish(draft)
+                return response
+            finally:
+                draft['busy'] = False
 
     async def publish_inspect(self, account_id: int, platform: str) -> dict:
         """只读检查发布页结构，不填稿、不点发布；用于适配器选择器联调。"""
@@ -958,6 +1576,36 @@ async def import_session(payload: dict = Body(...), authorization: str | None = 
     except Exception:
         LOG.exception('accounts/import failed')
         return {'ok': False, 'error': 'Cookie 导入校验失败，请稍后重试'}
+
+
+@app.post('/v2/publish/prepare')
+async def publish_prepare(payload: dict = Body(...), authorization: str | None = Header(default=None),
+                         idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+    _check(authorization)
+    try:
+        return await manager.publish_prepare(payload, idempotency_key or '')
+    except AdapterError as exc:
+        return {'ok': False, 'error': str(exc)}
+    except (TypeError, ValueError):
+        return {'ok': False, 'error': '发布预览参数无效'}
+    except Exception:
+        LOG.exception('publish/prepare failed')
+        return {'ok': False, 'error': '发布预览失败，请稍后重试'}
+
+
+@app.post('/v2/publish/confirm')
+async def publish_confirm(payload: dict = Body(...), authorization: str | None = Header(default=None),
+                         idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+    _check(authorization)
+    try:
+        return await manager.publish_confirm(payload, idempotency_key or '')
+    except AdapterError as exc:
+        return {'ok': False, 'error': str(exc)}
+    except (TypeError, ValueError):
+        return {'ok': False, 'error': '发布确认参数无效'}
+    except Exception:
+        LOG.exception('publish/confirm failed')
+        return {'ok': False, 'error': '发布确认失败，请核对平台作品状态后再处理'}
 
 
 @app.post('/v2/publish/inspect')

@@ -145,7 +145,7 @@ def event(db, resource, resource_id, action, actor_id=None, detail=None):
                            actor_id=actor_id, detail=detail or {}))
 
 
-def request(action, payload, request_key=None):
+def request(action, payload, request_key=None, timeout=75):
     from .ai_providers import trusted_url
     if not config.BROWSER_ENABLED or not config.BROWSER_ADAPTER_URL or not config.BROWSER_ADAPTER_TOKEN:
         raise HTTPException(503, '未配置受信浏览器适配服务及认证，不能执行真实平台操作')
@@ -154,7 +154,8 @@ def request(action, payload, request_key=None):
     if request_key:
         headers['Idempotency-Key'] = request_key
     try:
-        response = httpx.post(url + '/v2/' + action, json=payload, headers=headers, timeout=75, follow_redirects=False)
+        response = httpx.post(url + '/v2/' + action, json=payload, headers=headers,
+                              timeout=timeout, follow_redirects=False)
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict) or data.get('ok') is not True:
@@ -387,7 +388,8 @@ def run_publish(db, job, actor_id, confirm=False, retry=False):
     job.attempts += 1
     try:
         data = request('publish/confirm' if confirm else 'publish/prepare', payload,
-                       f'publish:{job.request_key}:' + ('confirm' if confirm else 'prepare'))
+                       f'publish:{job.request_key}:' + ('confirm' if confirm else 'prepare'),
+                       timeout=120 if confirm else 240)
         evidence = steps(data)
         if confirm:
             if data.get('status') != 'published' or not data.get('url'):

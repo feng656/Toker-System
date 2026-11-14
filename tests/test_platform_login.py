@@ -505,3 +505,110 @@ def test_refresh_accepts_late_phone_confirmation_after_qr_expiry(monkeypatch):
     monkeypatch.setattr(login_adapter,'_qr_from_page',fail)
     data=asyncio.run(manager.refresh(1,'attempt'))
     assert data['status']=='connected' and data['session']['handle']
+
+
+def test_publish_helpers_select_video_and_normalize_caption():
+    from app.login_adapter import _video_asset, _compose_caption, _publish_fingerprint
+    assets=[{'kind':'image','url':'https://res.example/a.png'},
+            {'kind':'video','url':'https://res.example/a.mp4?sign=one'}]
+    assert _video_asset(assets)['url'].endswith('a.mp4?sign=one')
+    assert _video_asset([{'kind':'image','url':'https://res.example/a.png'}]) is None
+    caption=_compose_caption('标题','正文','话题一, #话题二')
+    assert caption.startswith('标题\n正文') and '#话题一 #话题二' in caption
+    one=_publish_fingerprint({'account_id':1,'platform':'douyin','variant_id':2,'title':'t','body':'b',
+                              'hashtags':'#x','assets':[{'kind':'video','url':'https://res.example/a.mp4?sign=one'}]})
+    two=_publish_fingerprint({'account_id':1,'platform':'douyin','variant_id':2,'title':'t','body':'b',
+                              'hashtags':'#x','assets':[{'kind':'video','url':'https://res.example/a.mp4?sign=two'}]})
+    assert one==two
+
+
+def test_publish_prepare_uploads_without_clicking_and_confirm_publishes(monkeypatch,tmp_path):
+    import asyncio
+    from app.login_adapter import (BrowserManager, _Session, AdapterError, PUBLISH_INSPECT_JS,
+                                   PUBLISH_FIELD_JS, PUBLISH_BUTTON_JS, DISMISS_OVERLAY_JS)
+
+    class Keyboard:
+        async def press(self,*args,**kwargs): pass
+
+    class Locator:
+        def __init__(self,page,kind): self.page,self.kind=page,kind
+        @property
+        def first(self): return self
+        async def count(self): return 1
+        def nth(self,_): return self
+        async def get_attribute(self,name): return 'video/*' if name=='accept' else ''
+        async def set_input_files(self,path):
+            self.page.uploaded=path
+        async def click(self,*args,**kwargs):
+            if self.kind=='publish':
+                self.page.clicks+=1
+                self.page.url='https://www.douyin.com/video/7450000000000000000'
+        async def fill(self,text,*args,**kwargs): self.page.filled=(self.kind,text)
+        async def press(self,*args,**kwargs): pass
+        async def type(self,text,*args,**kwargs): self.page.filled=(self.kind,text)
+
+    class Page:
+        def __init__(self):
+            self.url='https://creator.douyin.com/creator-micro/content/upload'
+            self.clicks=0; self.uploaded=None; self.filled=None; self.closed=False
+            self.keyboard=Keyboard()
+        def set_default_timeout(self,*args): pass
+        async def goto(self,*args,**kwargs): pass
+        async def wait_for_timeout(self,*args,**kwargs): pass
+        async def wait_for_selector(self,*args,**kwargs): pass
+        async def inner_text(self,*args,**kwargs):
+            return '上传视频 作品简介 发布'
+        async def evaluate(self,script):
+            if 'return el ? String' in script: return '标题\n正文 #话题'
+            if 'file_inputs' in script: return {'text':'上传成功 作品简介','file_inputs':[],'editables':[],'buttons':[]}
+            if 'placeholders' in script: return {'title':False,'caption':True,'title_text':'','caption_text':''}
+            if 'data-toker-publish-button' in script: return {'found':True,'disabled':False,'text':'发布'}
+            return ''
+        def locator(self,selector):
+            if selector=='input[type=file]': return Locator(self,'file')
+            if 'title' in selector: return Locator(self,'title')
+            if 'caption' in selector: return Locator(self,'caption')
+            if 'data-toker-publish-button' in selector: return Locator(self,'publish')
+            return Locator(self,'other')
+        def on(self,*args,**kwargs): pass
+        def is_closed(self): return self.closed
+        async def screenshot(self,*args,**kwargs): return b'fake-image'
+        async def close(self): self.closed=True
+
+    class Context:
+        def __init__(self,page): self.page=page
+        async def new_page(self): return self.page
+        async def cookies(self): return []
+        async def close(self): pass
+
+    page=Page()
+    session=_Session(1,'douyin','a',Context(page),page,None,datetime.now(timezone.utc)+timedelta(hours=1))
+    session.handle='h'*32
+    manager=BrowserManager();manager._sessions[1]=session
+    async def fake_download(url):
+        path=tmp_path/'video.mp4';path.write_bytes(b'video');return str(path)
+    monkeypatch.setattr(manager,'_download_video',fake_download)
+    assets=[{'kind':'video','url':'https://res.example/v.mp4'}]
+    payload={'account_id':1,'platform':'douyin','variant_id':2,'title':'标题','body':'正文',
+             'hashtags':'#话题','assets':assets,'session':{'handle':session.handle},'submit':False}
+    prepared=asyncio.run(manager.publish_prepare(payload,'key-prepare'))
+    assert prepared['status']=='awaiting_confirmation' and prepared['confirmation_token']
+    assert page.clicks==0 and page.uploaded and page.filled[0]=='caption'
+    assert len(prepared['steps'])>=1 and any(s.get('screenshot_png_base64') for s in prepared['steps'])
+    confirm={'account_id':1,'platform':'douyin','remote_job_id':prepared['job_id'],
+             'confirmation_token':prepared['confirmation_token'],'human_confirmed':True}
+    result=asyncio.run(manager.publish_confirm(confirm,'key-confirm'))
+    assert result['status']=='published'
+    assert result['url']=='https://www.douyin.com/video/7450000000000000000'
+    assert page.clicks==1 and prepared['job_id'] not in manager._publishes
+    repeat=asyncio.run(manager.publish_confirm(confirm,'key-confirm'))
+    assert repeat['url']==result['url'] and page.clicks==1
+
+
+def test_publish_confirm_rejects_missing_human_confirmation(monkeypatch):
+    import asyncio
+    from app.login_adapter import BrowserManager, AdapterError
+    manager=BrowserManager()
+    with pytest.raises(AdapterError):
+        asyncio.run(manager.publish_confirm({'account_id':1,'remote_job_id':'x',
+                                             'confirmation_token':'y','human_confirmed':False}))
