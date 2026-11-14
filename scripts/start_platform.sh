@@ -17,6 +17,8 @@ if python -c "from app import config; raise SystemExit(0 if config.BROWSER_ENABL
   echo "[start] login adapter on 127.0.0.1:${ADAPTER_PORT}"
   python -m app.login_adapter > var/login_adapter.log 2>&1 &
   adapter_pid=$!
+  # 把适配器日志同步到容器 stdout，便于部署平台直接取证扫码链路。
+  tail -n 0 -F var/login_adapter.log &
   i=0
   while [ "$i" -lt 30 ]; do
     if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${ADAPTER_PORT}/health', timeout=2)" >/dev/null 2>&1; then
