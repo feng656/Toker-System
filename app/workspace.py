@@ -125,6 +125,21 @@ def import_session(db, account, body, actor_id):
     return public_account(account)
 
 
+def publish_inspect(db, account, actor_id):
+    """只读打开平台发布页并返回 DOM 摘要/截图，用于发布适配器选择器联调。"""
+    lock(db, f'account:{account.id}')
+    db.refresh(account)
+    platform = db.get(Platform, account.platform_id)
+    from .login_catalog import check_login_platform
+    check_login_platform(platform)
+    if account.status != 'connected' or not account.session_expires_at or account.session_expires_at <= utcnow():
+        raise HTTPException(409, '账号未登录或会话已过期，请重新扫码')
+    data = request('publish/inspect', {'account_id': account.id, 'platform': platform.code})
+    event(db, 'account', account.id, 'publish_inspect', actor_id)
+    db.commit()
+    return data
+
+
 def event(db, resource, resource_id, action, actor_id=None, detail=None):
     db.add(AutomationEvent(resource=resource, resource_id=resource_id, action=action,
                            actor_id=actor_id, detail=detail or {}))

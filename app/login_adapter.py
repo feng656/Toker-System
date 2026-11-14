@@ -45,8 +45,39 @@ PLATFORM_CONFIG: dict[str, dict[str, Any]] = {
         # 导入 Cookie 时只认平台同源接口的登录态：未登录时页面也带 sessionid
         # 访客 Cookie，仅凭 Cookie 名会把无效导入误判成 connected。
         'user_api': 'https://creator.douyin.com/web/api/media/user/info/',
+        'publish_url': 'https://creator.douyin.com/creator-micro/content/upload',
     },
 }
+
+PUBLISH_INSPECT_JS = r"""
+() => {
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+  };
+  const brief = (el) => (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 100);
+  const attr = (el, name) => el.getAttribute(name) || '';
+  return {
+    url: location.href,
+    title: document.title,
+    file_inputs: Array.from(document.querySelectorAll('input[type=file]')).map((el) => ({
+      accept: attr(el, 'accept'), multiple: !!el.multiple, visible: visible(el),
+      name: attr(el, 'name'), cls: String(el.className || '').slice(0, 160),
+    })),
+    editables: Array.from(document.querySelectorAll('[contenteditable=true], textarea, input[type=text]'))
+      .filter(visible)
+      .map((el) => ({
+        tag: el.tagName, cls: String(el.className || '').slice(0, 160),
+        placeholder: attr(el, 'placeholder') || attr(el, 'data-placeholder') || attr(el, 'data-placeholder-text') || '',
+        text: brief(el).slice(0, 200),
+      })).slice(0, 40),
+    buttons: Array.from(document.querySelectorAll('button, [role=button]'))
+      .filter(visible).map(brief).filter(Boolean).slice(0, 100),
+    text: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 2500),
+  };
+}
+"""
 
 QR_SCAN_JS = r"""
 () => {
@@ -808,6 +839,38 @@ class BrowserManager:
                 data['qr_png_base64'] = base64.b64encode(fresh).decode()
             return data
 
+    async def publish_inspect(self, account_id: int, platform: str) -> dict:
+        """只读检查发布页结构，不填稿、不点发布；用于适配器选择器联调。"""
+        settings = PLATFORM_CONFIG.get(platform)
+        if not settings or not settings.get('publish_url'):
+            raise AdapterError('该平台尚未接入发布页检查')
+        async with self._lock(account_id):
+            session = self._sessions.get(account_id)
+            if not session or not session.handle or session.page.is_closed():
+                raise AdapterError('账号会话不在线，请重新登录')
+            page = await session.context.new_page()
+            page.set_default_timeout(8000)
+            try:
+                await page.goto(settings['publish_url'], wait_until='domcontentloaded', timeout=30000)
+                await page.wait_for_timeout(6000)
+                try:
+                    await page.wait_for_selector('input[type=file], [contenteditable=true]',
+                                                 state='attached', timeout=8000)
+                except Exception:
+                    pass
+                info = await page.evaluate(PUBLISH_INSPECT_JS)
+                text = str(info.get('text') or '')
+                if '扫码登录' in text or '验证码登录' in text:
+                    raise AdapterError('账号登录态已失效，请重新登录')
+                png = await page.screenshot(type='png', full_page=False, timeout=10000)
+                LOG.info('发布页检查 account=%s url=%s file_inputs=%s editables=%s',
+                         account_id, page.url.split('?', 1)[0][:180],
+                         len(info.get('file_inputs') or []), len(info.get('editables') or []))
+                return {'ok': True, 'status': 'inspected', 'url': page.url,
+                        'dom': info, 'screenshot_png_base64': base64.b64encode(png).decode()}
+            finally:
+                await page.close()
+
     async def logout(self, account_id: int, session_payload: Any) -> dict:
         async with self._lock(account_id):
             session = self._sessions.pop(account_id, None)
@@ -895,6 +958,21 @@ async def import_session(payload: dict = Body(...), authorization: str | None = 
     except Exception:
         LOG.exception('accounts/import failed')
         return {'ok': False, 'error': 'Cookie 导入校验失败，请稍后重试'}
+
+
+@app.post('/v2/publish/inspect')
+async def publish_inspect(payload: dict = Body(...), authorization: str | None = Header(default=None)):
+    _check(authorization)
+    try:
+        return await manager.publish_inspect(int(payload.get('account_id')),
+                                             str(payload.get('platform') or ''))
+    except AdapterError as exc:
+        return {'ok': False, 'error': str(exc)}
+    except (TypeError, ValueError):
+        return {'ok': False, 'error': '发布页检查参数无效'}
+    except Exception:
+        LOG.exception('publish/inspect failed')
+        return {'ok': False, 'error': '发布页检查失败，请稍后重试'}
 
 
 @app.post('/v2/accounts/logout')

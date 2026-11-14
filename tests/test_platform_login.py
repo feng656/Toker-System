@@ -462,6 +462,26 @@ def test_user_info_distinguishes_guest_from_network_error(monkeypatch):
     assert down['state']=='unknown'
 
 
+def test_publish_inspect_only_runs_for_connected_account(client,headers,monkeypatch):
+    a=account(client,headers);seen=[]
+    monkeypatch.setattr(workspace,'request',lambda *args,**kw:pytest.fail('未连接不得调用发布页检查'))
+    r=client.post(f'/api/v1/workspace/accounts/{a["id"]}/publish-inspect',headers=headers)
+    assert r.status_code==409
+    with SessionLocal() as db:
+        row=db.get(WorkspaceAccount,a['id'])
+        row.status='connected';row.session_expires_at=utcnow()+timedelta(hours=1);db.commit()
+    def adapter(action,payload,request_key=None):
+        seen.append((action,payload))
+        return {'ok':True,'status':'inspected','url':'https://creator.douyin.com/creator-micro/content/upload',
+                'dom':{'file_inputs':[],'editables':[],'buttons':[],'text':''},'screenshot_png_base64':'aGVsbG8='}
+    monkeypatch.setattr(workspace,'request',adapter)
+    r=client.post(f'/api/v1/workspace/accounts/{a["id"]}/publish-inspect',headers=headers)
+    assert r.status_code==200 and r.json()['status']=='inspected'
+    assert seen and seen[0][0]=='publish/inspect' and seen[0][1]['platform']=='douyin'
+    with SessionLocal() as db:
+        assert db.scalar(select(AutomationEvent).where(AutomationEvent.action=='publish_inspect'))
+
+
 def test_refresh_accepts_late_phone_confirmation_after_qr_expiry(monkeypatch):
     import asyncio,io
     from PIL import Image

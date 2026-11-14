@@ -84,6 +84,12 @@ def session_import(aid:int,body:SessionImportIn,db:Session=Depends(get_db),actor
     return workspace.import_session(db,row(db,WorkspaceAccount,aid),body,actor.id)
 
 
+@api.post('/workspace/accounts/{aid}/publish-inspect', tags=['工作空间'])
+def publish_inspect(aid:int,db:Session=Depends(get_db),actor=Depends(operate)):
+    """只读检查发布页结构；返回平台页面截图与可填控件摘要。"""
+    return workspace.publish_inspect(db,row(db,WorkspaceAccount,aid),actor.id)
+
+
 @api.get('/workspace/accounts/{aid}/session', tags=['工作空间'])
 def session(aid:int,db:Session=Depends(get_db),_=Depends(operate)):
     a=row(db,WorkspaceAccount,aid);result=workspace.public_account(a)
