@@ -10,12 +10,14 @@ import asyncio
 import base64
 import hmac
 import io
+import json
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import Body, FastAPI, Header, HTTPException
 from PIL import Image, ImageStat, UnidentifiedImageError
@@ -33,10 +35,11 @@ PLATFORM_CONFIG: dict[str, dict[str, Any]] = {
         # 未登录时页面地址也停在 /creator-micro/，不能用 URL 判定登录成功；
         # 只认平台登录后签发的会话 Cookie，避免二维码刚出就被误判为已登录。
         'url': 'https://creator.douyin.com/creator-micro/home',
-        'cookies': ('sessionid', 'sessionid_ss', 'sid_guard'),
-        # 官方页面把二维码放在 data:image PNG 里；等待元素出现比反复执行
-        # 页面脚本更稳，避免首屏长时间主线程繁忙时把等待窗口耗尽。
-        'qr_selector': '#douyin_login_comp_scan_code_qrcode img[src^="data:image"]',
+        'cookies': ('sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt', 'uid_tt', 'uid_tt_ss'),
+        # 官方页面把二维码放在 <img> 里（当前是 data:image PNG，也可能换成
+        # blob/URL）；等待元素出现比反复执行页面脚本更稳，避免首屏主线程
+        # 繁忙时把等待窗口耗尽。
+        'qr_selector': '#douyin_login_comp_scan_code_qrcode img',
         # 二维码若改用 canvas / 背景图渲染，直接截取官方容器兜底。
         'qr_containers': ('#douyin_login_comp_scan_code_qrcode', '#animate_qrcode_container'),
     },
@@ -104,23 +107,76 @@ def _png(raw: bytes) -> bytes | None:
 
 
 def _qr_like(png: bytes) -> bool:
-    """排除空白占位图、纯色 logo 和装饰图；二维码必须有明显的黑白分布。"""
+    """排除空白占位图、纯色 logo、宣传轮播和装饰图；二维码应近似正方形且以黑白为主。"""
     try:
         with Image.open(io.BytesIO(png)) as image:
+            width, height = image.size
+            # 登录页左侧的推广轮播是 4:3 横幅，二维码容器/图片接近正方形。
+            if height <= 0 or not 0.9 <= width / height <= 1.1:
+                return False
             gray = image.convert('L')
             histogram = gray.histogram()
             total = sum(histogram) or 1
             dark = sum(histogram[:96]) / total
             nonwhite = sum(histogram[:245]) / total
             deviation = ImageStat.Stat(gray).stddev[0]
-            return 0.035 <= dark <= 0.93 and nonwhite >= 0.08 and deviation >= 10
+            if not (0.035 <= dark <= 0.93 and nonwhite >= 0.08 and deviation >= 10):
+                return False
+            # 二维码主体是黑白模块，彩色像素占比很低；宣传图/插画颜色丰富。
+            sample = image.convert('RGB').resize((64, 64))
+            pixels = list(sample.getdata())
+            saturated = sum(1 for r, g, b in pixels if max(r, g, b) - min(r, g, b) > 48)
+            return saturated / len(pixels) <= 0.18
     except (ValueError, OSError, UnidentifiedImageError):
         return False
 
 
-async def _qr_from_page(page: Page) -> bytes | None:
-    """从任意 frame 的真实页面图片里取二维码；优先平台直接给出的 data PNG。"""
-    for frame in page.frames:
+async def _qr_from_selector(page: Page, selector: str) -> bytes | None:
+    """只截取平台登录卡片里被明确标记为二维码的 <img>，避免误收旁边的宣传图。"""
+    try:
+        frames = page.frames
+    except Exception:
+        return None
+    for frame in frames:
+        try:
+            locator = frame.locator(selector).first
+            if await locator.count() == 0:
+                continue
+            try:
+                src = await locator.get_attribute('src', timeout=2000) or ''
+            except Exception:
+                src = ''
+            if src.startswith('data:image/png;base64,'):
+                try:
+                    raw = base64.b64decode(src.split(',', 1)[1], validate=True)
+                except (ValueError, IndexError):
+                    raw = b''
+                cleaned = _png(raw)
+                if cleaned and _qr_like(cleaned):
+                    return cleaned
+            try:
+                raw = await locator.screenshot(type='png', timeout=5000)
+            except Exception:
+                continue
+            cleaned = _png(raw)
+            if cleaned and _qr_like(cleaned):
+                return cleaned
+        except Exception:
+            continue
+    return None
+
+
+async def _qr_from_page(page: Page, selector: str = '') -> bytes | None:
+    """取二维码：优先精确选择器；没有时才在评分足够高的页面图片里兜底。"""
+    if selector:
+        precise = await _qr_from_selector(page, selector)
+        if precise:
+            return precise
+    try:
+        frames = page.frames
+    except Exception:
+        return None
+    for frame in frames:
         try:
             candidates = await asyncio.wait_for(frame.evaluate(QR_SCAN_JS), timeout=2.0)
         except Exception:
@@ -130,6 +186,10 @@ async def _qr_from_page(page: Page) -> bytes | None:
                      [{k: v for k, v in item.items() if k != 'src'} for item in candidates[:5] if isinstance(item, dict)])
         for item in candidates:
             if not isinstance(item, dict):
+                continue
+            # 只接受带 qr/scan 提示或平台 data PNG 的高分候选，避免把
+            # 登录页轮播、插画或头像当成二维码返回给前端。
+            if int(item.get('score') or 0) < 140:
                 continue
             src = str(item.get('src') or '')
             index = item.get('index')
@@ -154,7 +214,11 @@ async def _qr_from_page(page: Page) -> bytes | None:
 
 async def _qr_from_containers(page: Page, selectors: tuple[str, ...]) -> bytes | None:
     """二维码不是 <img> 时，直接截取平台官方二维码容器。"""
-    for frame in page.frames:
+    try:
+        frames = page.frames
+    except Exception:
+        return None
+    for frame in frames:
         for selector in selectors:
             try:
                 locator = frame.locator(selector).first
@@ -182,6 +246,7 @@ class _Session:
         self.expires_at = expires_at
         self.handle = ''
         self.nickname = ''
+        self.cookie_names: list[str] = []
         self.created_at = _now()
 
     async def close(self):
@@ -197,6 +262,7 @@ class BrowserManager:
         self._browser: Browser | None = None
         self._sessions: dict[int, _Session] = {}
         self._locks: dict[int, asyncio.Lock] = {}
+        self._poll_state: dict[int, dict[str, Any]] = {}
         self._reaper: asyncio.Task | None = None
 
     def _lock(self, account_id: int) -> asyncio.Lock:
@@ -243,7 +309,51 @@ class BrowserManager:
                         current = self._sessions.get(account_id)
                         if current is session and not session.handle:
                             self._sessions.pop(account_id, None)
+                            self._poll_state.pop(account_id, None)
                             await session.close()
+
+    def _watch_login_page(self, page: Page, account_id: int):
+        """记录扫码链路的关键节点，不记录 Cookie 值、二维码 token 或跳转票据。"""
+        page.on('framenavigated', lambda frame: LOG.info(
+            '页面跳转 account=%s main=%s url=%s', account_id, frame == page.main_frame,
+            frame.url.split('?', 1)[0][:160]))
+        page.on('response', lambda response: asyncio.create_task(
+            self._log_login_response(account_id, response)))
+
+    async def _log_login_response(self, account_id: int, response):
+        url = response.url.lower()
+        api = 'check_qrconnect' if 'check_qrconnect' in url else ('get_qrcode' if 'get_qrcode' in url else '')
+        if not api:
+            # 手机确认后 passport 会跳转并下发 Cookie；只记路径与跳转主机，
+            # 不落查询串（里面可能带一次性票据）。
+            if '/passport/' in url:
+                parts = urlsplit(response.url)
+                location = response.headers.get('location') or ''
+                target = urlsplit(location) if location else None
+                LOG.info('passport 请求 account=%s http=%s path=%s location_host=%s location_path=%s',
+                         account_id, response.status, parts.path[:120],
+                         (target.hostname or '') if target else '',
+                         (target.path[:120] or '') if target else '')
+            return
+        if api == 'check_qrconnect':
+            self._poll_state[account_id] = {'at': _now(), 'http': response.status, 'status': None}
+        try:
+            payload = json.loads(await response.text())
+        except Exception:
+            LOG.info('扫码请求响应 account=%s api=%s http=%s body=unreadable',
+                     account_id, api, response.status)
+            return
+        data = payload.get('data') if isinstance(payload, dict) else None
+        status = data.get('status') if isinstance(data, dict) else None
+        redirect = str(data.get('redirect_url') or '') if isinstance(data, dict) else ''
+        host = urlsplit(redirect).hostname or ''
+        msg = str(payload.get('message') or payload.get('msg') or '')[:80] if isinstance(payload, dict) else ''
+        if api == 'check_qrconnect':
+            self._poll_state[account_id] = {'at': _now(), 'http': response.status, 'status': status}
+        LOG.info('扫码请求响应 account=%s api=%s http=%s code=%s status=%s redirect_host=%s msg=%s',
+                 account_id, api, response.status,
+                 payload.get('status_code') if isinstance(payload, dict) else None,
+                 status, host, msg)
 
     async def _evict_if_needed(self):
         if len(self._sessions) < max(1, config.LOGIN_MAX_BROWSER_SESSIONS):
@@ -254,6 +364,7 @@ class BrowserManager:
                 async with self._lock(account_id):
                     if self._sessions.get(account_id) is session:
                         self._sessions.pop(account_id, None)
+                        self._poll_state.pop(account_id, None)
                         await session.close()
         if len(self._sessions) >= max(1, config.LOGIN_MAX_BROWSER_SESSIONS):
             raise AdapterError('同时登录的账号过多，请先关闭其他扫码窗口或退出旧账号')
@@ -266,6 +377,7 @@ class BrowserManager:
             raise AdapterError('该平台尚未接入扫码登录')
         async with self._lock(account_id):
             previous = self._sessions.pop(account_id, None)
+            self._poll_state.pop(account_id, None)
             if previous:
                 await previous.close()
             await self._evict_if_needed()
@@ -276,6 +388,7 @@ class BrowserManager:
             )
             page = await context.new_page()
             page.set_default_timeout(5000)
+            self._watch_login_page(page, account_id)
             try:
                 LOG.info('打开平台登录页 account=%s platform=%s', account_id, platform)
                 await page.goto(settings['url'], wait_until='domcontentloaded', timeout=25000)
@@ -295,14 +408,14 @@ class BrowserManager:
                         LOG.info('二维码元素已出现 account=%s', account_id)
                     except Exception:
                         LOG.info('等待二维码元素超时 account=%s', account_id)
-                    raw = await _qr_from_page(page)
+                    raw = await _qr_from_page(page, qr_selector)
                 if not raw:
                     raw = await _qr_from_containers(page, settings.get('qr_containers', ()))
                 if not raw:
                     # 元素已挂载但图片尚未解码完成时，再给一小段兜底时间。
                     deadline = time.monotonic() + 6
                     while time.monotonic() < deadline:
-                        raw = await _qr_from_page(page)
+                        raw = await _qr_from_page(page, qr_selector or '')
                         if raw:
                             break
                         raw = await _qr_from_containers(page, settings.get('qr_containers', ()))
@@ -316,6 +429,7 @@ class BrowserManager:
                 expires_at = _now() + timedelta(seconds=max(60, config.LOGIN_QR_TTL_SECONDS))
                 session = _Session(account_id, platform, attempt_id, context, page, raw, expires_at)
                 self._sessions[account_id] = session
+                self._poll_state[account_id] = {'at': _now(), 'http': None, 'status': None}
                 return {
                     'ok': True,
                     'status': 'awaiting_scan',
@@ -349,6 +463,12 @@ class BrowserManager:
         except Exception:
             return False
         names = {str(c.get('name', '')).lower() for c in cookies if len(str(c.get('value', ''))) >= 8}
+        current = sorted(names)
+        if current != getattr(session, 'cookie_names', None):
+            # 只记录名称与数量，便于判断确认后 passport 是否真的下发了会话 Cookie。
+            session.cookie_names = current
+            LOG.info('账号 %s Cookie 名称变化 count=%s names=%s',
+                     getattr(session, 'account_id', '-'), len(current), current[:30])
         return any(name.lower() in names for name in settings.get('cookies', ()))
 
     async def _nickname(self, session: _Session) -> str:
@@ -384,13 +504,13 @@ class BrowserManager:
                     'nickname': session.nickname,
                     'expires_at': _iso(_now() + timedelta(hours=max(1, config.LOGIN_SESSION_TTL_HOURS))),
                 }
-            if session.expires_at <= _now():
-                self._sessions.pop(account_id, None)
-                await session.close()
-                return {'ok': True, 'status': 'expired'}
+            # 先查平台登录态，再处理本地二维码有效期。手机确认可能发生在旧码
+            # 过期之后；如果先按时间清掉会话，就会把刚建立的平台登录一起丢掉。
             if await self._logged_in(session):
                 session.handle = uuid.uuid4().hex
                 session.nickname = await self._nickname(session)
+                LOG.info('账号 %s 已完成平台登录 url=%s nickname=%s',
+                         account_id, session.page.url.split('?', 1)[0][:160], session.nickname)
                 return {
                     'ok': True,
                     'status': 'connected',
@@ -398,21 +518,69 @@ class BrowserManager:
                     'nickname': session.nickname,
                     'expires_at': _iso(_now() + timedelta(hours=max(1, config.LOGIN_SESSION_TTL_HOURS))),
                 }
+            settings = PLATFORM_CONFIG[session.platform]
+            selector = settings.get('qr_selector') or ''
+            now = _now()
+            # 平台页面自己约每 60 秒刷新一次二维码并持续轮询 check_qrconnect。
+            # 这里只跟随页面换码，不主动点“刷新”遮盖按钮：提前换码会让
+            # 刚扫完、正在手机上确认的旧 token 失效，反而丢掉登录。
+            fresh = await _qr_from_page(session.page, selector)
+            changed = bool(fresh and fresh != session.qr)
+            if changed:
+                session.qr = fresh
+                session.expires_at = now + timedelta(seconds=max(15, config.LOGIN_QR_TTL_SECONDS))
+                LOG.info('平台二维码已更新并延长有效期 account=%s', account_id)
+            # 页面轮询一旦因 5xx/网络错误停掉，手机确认后也没有人完成
+            # passport 交接。超过 15 秒没有任何 check_qrconnect 请求就重载
+            # 页面，在原上下文里恢复轮询（Cookie 不会被清掉）。
+            poll = self._poll_state.get(account_id) or {}
+            last_poll = poll.get('at')
+            if (last_poll
+                    and (now - session.created_at).total_seconds() > 20
+                    and (now - last_poll).total_seconds() > 15):
+                LOG.info('扫码轮询已停止 account=%s last_http=%s，重载登录页恢复',
+                         account_id, poll.get('http'))
+                try:
+                    await session.page.reload(wait_until='domcontentloaded', timeout=20000)
+                    await session.page.wait_for_selector(selector, state='attached', timeout=15000)
+                    self._poll_state[account_id] = {'at': _now(), 'http': None, 'status': None}
+                    if await self._logged_in(session):
+                        session.handle = uuid.uuid4().hex
+                        session.nickname = await self._nickname(session)
+                        LOG.info('账号 %s 重载后检测到登录成功', account_id)
+                        return {
+                            'ok': True,
+                            'status': 'connected',
+                            'session': {'handle': session.handle},
+                            'nickname': session.nickname,
+                            'expires_at': _iso(now + timedelta(hours=max(1, config.LOGIN_SESSION_TTL_HOURS))),
+                        }
+                    fresh = await _qr_from_page(session.page, selector)
+                    if fresh:
+                        session.qr = fresh
+                        session.expires_at = now + timedelta(seconds=max(15, config.LOGIN_QR_TTL_SECONDS))
+                        changed = True
+                        LOG.info('重载后取得新二维码 account=%s', account_id)
+                except Exception:
+                    LOG.warning('重载登录页失败 account=%s', account_id, exc_info=True)
+            if session.expires_at <= now:
+                self._sessions.pop(account_id, None)
+                await session.close()
+                return {'ok': True, 'status': 'expired'}
             data = {
                 'ok': True,
                 'status': 'awaiting_scan',
                 'attempt_id': session.attempt_id,
                 'expires_at': _iso(session.expires_at),
             }
-            fresh = await _qr_from_page(session.page)
-            if fresh and fresh != session.qr:
-                session.qr = fresh
+            if changed:
                 data['qr_png_base64'] = base64.b64encode(fresh).decode()
             return data
 
     async def logout(self, account_id: int, session_payload: Any) -> dict:
         async with self._lock(account_id):
             session = self._sessions.pop(account_id, None)
+            self._poll_state.pop(account_id, None)
             if session:
                 await session.close()
             return {'ok': True}

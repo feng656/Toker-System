@@ -63,7 +63,7 @@ BROWSER_ADAPTER_TOKEN = os.getenv('BROWSER_ADAPTER_TOKEN', '')
 BROWSER_LOGIN_PLATFORMS = [x.strip() for x in os.getenv('BROWSER_LOGIN_PLATFORMS', '').split(',') if x.strip()]
 LOGIN_ADAPTER_PORT = int(os.getenv('LOGIN_ADAPTER_PORT', '8400'))
 CHROMIUM_PATH = os.getenv('CHROMIUM_PATH', '/usr/bin/chromium')
-LOGIN_QR_TTL_SECONDS = int(os.getenv('LOGIN_QR_TTL_SECONDS', '120'))
+LOGIN_QR_TTL_SECONDS = int(os.getenv('LOGIN_QR_TTL_SECONDS', '75'))
 LOGIN_SESSION_TTL_HOURS = int(os.getenv('LOGIN_SESSION_TTL_HOURS', '168'))
 LOGIN_MAX_BROWSER_SESSIONS = int(os.getenv('LOGIN_MAX_BROWSER_SESSIONS', '4'))
 OFFICIAL_PUBLISH_ENABLED = os.getenv('OFFICIAL_PUBLISH_ENABLED', 'false').lower() == 'true'

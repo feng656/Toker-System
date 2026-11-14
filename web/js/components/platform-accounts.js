@@ -164,20 +164,13 @@ export default {
       onState: (data) => applyState(data, { allowRenew: true }),
       onError: (error) => { qrError.value = '登录状态查询已暂停：' + errorMessage(error); },
       onLimit: () => { qrError.value = '已暂停自动查询，请点击“继续查询”或重新获取二维码。'; },
+      // 平台每约 60 秒轮换二维码，后端会随轮换延长有效期；留足 10 分钟
+      // 让用户从容扫码，而不是倒计时一到就重建浏览器上下文、扼杀刚确认的登录。
+      maxChecks: 200,
     });
     function startClock() {
       clearClock();
-      clock = window.setInterval(() => {
-        now.value = Date.now();
-        if (qrState.value === 'awaiting_scan' && !remaining.value) {
-          qrState.value = 'loading';
-          qrUrl.value = '';
-          qrError.value = '';
-          poller.stop();
-          clearClock();
-          renewQr();
-        }
-      }, 1000);
+      clock = window.setInterval(() => { now.value = Date.now(); }, 1000);
     }
     async function startQr(account, { auto = false } = {}) {
       if (disposed) return;
@@ -306,7 +299,7 @@ export default {
     <template v-else-if="qrUrl && qrState === 'awaiting_scan'">
       <img :src="qrUrl" :alt="(qrPlatform?.name || '平台') + '登录二维码'" class="pa-qr-image" @error="qrError = '二维码图片加载失败，请检查存储服务后重试'" />
       <p>请使用 {{ qrPlatform?.name }} 手机端扫码，并在手机上确认登录。</p>
-      <div class="muted">剩余 {{ remaining }} 秒 · 扫码人决定实际授权账号</div>
+      <div class="muted">{{ remaining > 0 ? '剩余 ' + remaining + ' 秒' : '正在确认最新二维码…' }} · 扫码人决定实际授权账号</div>
       <div class="muted">平台约每 60 秒更新一次二维码，系统会自动同步；过期会自动换新码</div>
       <div v-if="qrNotice" class="muted">{{ qrNotice }}</div>
     </template>

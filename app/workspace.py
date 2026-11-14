@@ -181,10 +181,8 @@ def refresh(db, account, actor_id):
     from .login_catalog import check_login_platform
     platform = db.get(Platform, account.platform_id)
     check_login_platform(platform)
-    if public_account(account)['status'] == 'expired':
-        apply_login(account, {'status': 'expired'})
-        db.commit()
-        return public_account(account)
+    # 不能只按本地 qr_expires_at 提前判死：手机确认可能比倒计时晚到，
+    # 适配器也可能已经轮换出新码。始终先问适配器，由它给出登录态/新码/过期。
     if account.status not in ('awaiting_scan', 'connected'):
         raise HTTPException(409, '请先获取二维码并发起登录')
     before = account.status
