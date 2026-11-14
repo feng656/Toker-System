@@ -236,7 +236,7 @@ async def _qr_from_containers(page: Page, selectors: tuple[str, ...]) -> bytes |
 
 class _Session:
     def __init__(self, account_id: int, platform: str, attempt_id: str,
-                 context: BrowserContext, page: Page, qr: bytes, expires_at: datetime):
+                 context: BrowserContext, page: Page, qr: bytes | None, expires_at: datetime):
         self.account_id = account_id
         self.platform = platform
         self.attempt_id = attempt_id
@@ -418,6 +418,106 @@ class BrowserManager:
         if api == 'check_qrconnect' and msg == 'error':
             asyncio.create_task(self._capture_login_error(account_id))
 
+    async def _new_context(self) -> BrowserContext:
+        context = await self._browser.new_context(
+            viewport={'width': 1440, 'height': 900},
+            locale='zh-CN',
+            timezone_id='Asia/Shanghai',
+            user_agent=self._user_agent or None,
+            extra_http_headers={'Accept-Language': 'zh-CN,zh;q=0.9'},
+        )
+        # 去除自动化标记，避免平台在手机确认后按风险环境拒绝下发登录态。
+        await context.add_init_script(
+            """Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+               Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh']});
+               window.chrome = window.chrome || {runtime: {}, app: {isInstalled: false}};""")
+        return context
+
+    @staticmethod
+    def _playwright_cookies(cookies) -> list[dict]:
+        result = []
+        for item in cookies or []:
+            if not isinstance(item, dict):
+                continue
+            name, domain = str(item.get('name') or ''), str(item.get('domain') or '')
+            if not name or not domain:
+                continue
+            entry = {'name': name, 'value': str(item.get('value') or ''), 'domain': domain,
+                     'path': str(item.get('path') or '/'),
+                     'httpOnly': bool(item.get('httpOnly')), 'secure': bool(item.get('secure', True))}
+            expires = item.get('expires', item.get('expirationDate'))
+            if item.get('session') or expires is None or float(expires) <= 0:
+                pass
+            else:
+                entry['expires'] = float(expires)
+            same_site = {'no_restriction': 'None', 'none': 'None', 'lax': 'Lax',
+                         'strict': 'Strict'}.get(str(item.get('sameSite') or '').lower())
+            if same_site:
+                entry['sameSite'] = same_site
+            result.append(entry)
+        return result
+
+    @staticmethod
+    def _cookie_expiry(cookies: list[dict], platform: str) -> datetime:
+        now = _now()
+        names = set(PLATFORM_CONFIG[platform].get('cookies', ()))
+        values = [datetime.fromtimestamp(float(c['expires']), tz=timezone.utc)
+                  for c in cookies
+                  if c.get('name') in names and isinstance(c.get('expires'), (int, float))
+                  and c['expires'] > now.timestamp()]
+        cap = now + timedelta(hours=max(1, config.LOGIN_SESSION_TTL_HOURS))
+        return min(min(values), cap) if values else cap
+
+    async def _import_locked(self, account_id: int, platform: str, cookies) -> dict:
+        settings = PLATFORM_CONFIG.get(platform)
+        if not settings:
+            raise AdapterError('该平台尚未接入扫码登录')
+        normalized = self._playwright_cookies(cookies)
+        if not normalized:
+            return {'ok': True, 'status': 'invalid', 'error': 'Cookie 为空或格式无效'}
+        previous = self._sessions.pop(account_id, None)
+        self._poll_state.pop(account_id, None)
+        if previous:
+            await previous.close()
+        await self._evict_if_needed()
+        context = await self._new_context()
+        try:
+            await context.add_cookies(normalized)
+            page = await context.new_page()
+            page.set_default_timeout(5000)
+            self._watch_login_page(page, account_id)
+            LOG.info('写入导入 Cookie 并打开平台 account=%s platform=%s count=%s',
+                     account_id, platform, len(normalized))
+            await page.goto(settings['url'], wait_until='domcontentloaded', timeout=25000)
+            try:
+                await page.wait_for_timeout(2000)
+            except Exception:
+                pass
+            expires_at = self._cookie_expiry(normalized, platform)
+            session = _Session(account_id, platform, '', context, page, None, expires_at)
+            if not await self._logged_in(session):
+                LOG.info('导入 Cookie 未通过平台登录检测 account=%s url=%s',
+                         account_id, page.url.split('?', 1)[0][:160])
+                await context.close()
+                return {'ok': True, 'status': 'invalid', 'error': 'Cookie 已失效或不属于该平台账号'}
+            session.handle = uuid.uuid4().hex
+            session.nickname = await self._nickname(session)
+            self._sessions[account_id] = session
+            LOG.info('导入 Cookie 登录成功 account=%s nickname=%s expires=%s',
+                     account_id, session.nickname, _iso(expires_at))
+            return {'ok': True, 'status': 'connected', 'session': {'handle': session.handle},
+                    'nickname': session.nickname, 'expires_at': _iso(expires_at)}
+        except Exception:
+            try:
+                await context.close()
+            except Exception:
+                pass
+            raise
+
+    async def import_session(self, account_id: int, platform: str, cookies) -> dict:
+        async with self._lock(account_id):
+            return await self._import_locked(account_id, platform, cookies)
+
     async def _evict_if_needed(self):
         if len(self._sessions) < max(1, config.LOGIN_MAX_BROWSER_SESSIONS):
             return
@@ -444,18 +544,7 @@ class BrowserManager:
             if previous:
                 await previous.close()
             await self._evict_if_needed()
-            context = await self._browser.new_context(
-                viewport={'width': 1440, 'height': 900},
-                locale='zh-CN',
-                timezone_id='Asia/Shanghai',
-                user_agent=self._user_agent or None,
-                extra_http_headers={'Accept-Language': 'zh-CN,zh;q=0.9'},
-            )
-            # 去除自动化标记，避免平台在手机确认后按风险环境拒绝下发登录态。
-            await context.add_init_script(
-                """Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                   Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh']});
-                   window.chrome = window.chrome || {runtime: {}, app: {isInstalled: false}};""")
+            context = await self._new_context()
             page = await context.new_page()
             page.set_default_timeout(5000)
             self._watch_login_page(page, account_id)
@@ -557,10 +646,19 @@ class BrowserManager:
         except Exception:
             return ''
 
-    async def refresh(self, account_id: int, attempt_id: str) -> dict:
+    async def refresh(self, account_id: int, attempt_id: str,
+                      session_payload: Any = None, platform: str = '') -> dict:
         async with self._lock(account_id):
             session = self._sessions.get(account_id)
-            if not session or (attempt_id and session.attempt_id != attempt_id):
+            if not session:
+                # 适配器重启后，导入的 Cookie 会话靠数据库里的密文恢复上下文。
+                cookies = session_payload.get('cookies') if isinstance(session_payload, dict) else None
+                if cookies and platform:
+                    restored = await self._import_locked(account_id, platform, cookies)
+                    if restored.get('status') == 'connected':
+                        return restored
+                return {'ok': True, 'status': 'expired'}
+            if attempt_id and session.attempt_id and session.attempt_id != attempt_id:
                 return {'ok': True, 'status': 'expired'}
             if session.handle:
                 if session.page.is_closed():
@@ -572,7 +670,8 @@ class BrowserManager:
                     'status': 'connected',
                     'session': {'handle': session.handle},
                     'nickname': session.nickname,
-                    'expires_at': _iso(_now() + timedelta(hours=max(1, config.LOGIN_SESSION_TTL_HOURS))),
+                    'expires_at': _iso(min(session.expires_at, _now() + timedelta(
+                        hours=max(1, config.LOGIN_SESSION_TTL_HOURS)))),
                 }
             # 先查平台登录态，再处理本地二维码有效期。手机确认可能发生在旧码
             # 过期之后；如果先按时间清掉会话，就会把刚建立的平台登录一起丢掉。
@@ -711,12 +810,29 @@ async def refresh(payload: dict = Body(...), authorization: str | None = Header(
     try:
         account_id = int(payload.get('account_id'))
         attempt_id = str(payload.get('attempt_id') or '')
-        return await manager.refresh(account_id, attempt_id)
+        return await manager.refresh(account_id, attempt_id, payload.get('session'),
+                                      str(payload.get('platform') or ''))
     except (TypeError, ValueError):
         return {'ok': False, 'error': '登录请求参数无效'}
     except Exception:
         LOG.exception('accounts/refresh failed')
         return {'ok': False, 'error': '扫码服务暂时不可用，请稍后重试'}
+
+
+@app.post('/v2/accounts/import')
+async def import_session(payload: dict = Body(...), authorization: str | None = Header(default=None)):
+    _check(authorization)
+    try:
+        account_id = int(payload.get('account_id'))
+        platform = str(payload.get('platform') or '')
+        return await manager.import_session(account_id, platform, payload.get('cookies') or [])
+    except AdapterError as exc:
+        return {'ok': False, 'error': str(exc)}
+    except (TypeError, ValueError):
+        return {'ok': False, 'error': 'Cookie 导入参数无效'}
+    except Exception:
+        LOG.exception('accounts/import failed')
+        return {'ok': False, 'error': 'Cookie 导入校验失败，请稍后重试'}
 
 
 @app.post('/v2/accounts/logout')

@@ -315,6 +315,80 @@ def test_refresh_extends_expiry_when_platform_rotates_qr(monkeypatch):
     assert session.expires_at>login_adapter._now()
 
 
+def test_session_import_encrypts_cookies_and_audits(client,headers,monkeypatch):
+    monkeypatch.setattr(config,'SESSION_ENCRYPTION_KEY',Fernet.generate_key().decode())
+    a=account(client,headers);seen=[]
+    expires=(datetime.now(timezone.utc)+timedelta(days=2)).isoformat()
+    def adapter(action,payload,request_key=None):
+        seen.append((action,payload))
+        return {'ok':True,'status':'connected','session':{'handle':'imported-handle'},
+                'nickname':'本机扫码账号','expires_at':expires}
+    monkeypatch.setattr(workspace,'request',adapter)
+    body={'platform':'douyin','session':{'cookies':[
+        {'name':'sessionid','value':'s'*64,'domain':'.douyin.com','path':'/','secure':True,
+         'httpOnly':True,'sameSite':'no_restriction','expirationDate':4102444800},
+        {'name':'sessionid_ss','value':'t'*64,'domain':'.douyin.com','path':'/','secure':True},
+    ],'nickname':'备用昵称'}}
+    r=client.post(f'/api/v1/workspace/accounts/{a["id"]}/session-import',headers=headers,json=body)
+    assert r.status_code==200,r.text
+    data=r.json()
+    assert data['status']=='connected' and data['nickname']=='本机扫码账号'
+    assert 'session_ciphertext' not in data and 's'*64 not in r.text and 't'*64 not in r.text
+    assert seen[0][0]=='accounts/import' and seen[0][1]['cookies'][0]['name']=='sessionid'
+    # 适配器收到的 Cookie 已规范化：Chrome 的 no_restriction 转成 Playwright 的 None。
+    assert seen[0][1]['cookies'][0]['sameSite']=='None'
+    with SessionLocal() as db:
+        row=db.get(WorkspaceAccount,a['id'])
+        payload=workspace.decrypt(row.session_ciphertext)
+        assert payload['handle']=='imported-handle' and payload['source']=='cookie_import'
+        assert payload['cookies'][0]['value']=='s'*64
+        ev=db.scalar(select(AutomationEvent).where(AutomationEvent.action=='session_import'))
+        assert ev and ev.detail['cookie_count']==2
+        assert 's'*64 not in str(ev.detail) and 't'*64 not in str(ev.detail)
+
+
+def test_session_import_rejects_wrong_platform_and_missing_cookie(client,headers,monkeypatch):
+    monkeypatch.setattr(config,'SESSION_ENCRYPTION_KEY',Fernet.generate_key().decode())
+    a=account(client,headers)
+    monkeypatch.setattr(workspace,'request',lambda *args,**kw:pytest.fail('校验前不得调用适配器'))
+    wrong=client.post(f'/api/v1/workspace/accounts/{a["id"]}/session-import',headers=headers,
+        json={'platform':'xhs','session':{'cookies':[{'name':'sessionid','value':'x'*20,'domain':'.douyin.com'}]}})
+    assert wrong.status_code==409
+    missing=client.post(f'/api/v1/workspace/accounts/{a["id"]}/session-import',headers=headers,
+        json={'platform':'douyin','session':{'cookies':[{'name':'ttwid','value':'x'*20,'domain':'.douyin.com'}]}})
+    assert missing.status_code==422 and 'sessionid' in missing.text
+    foreign=client.post(f'/api/v1/workspace/accounts/{a["id"]}/session-import',headers=headers,
+        json={'platform':'douyin','session':{'cookies':[{'name':'sessionid','value':'x'*20,'domain':'.example.com'}]}})
+    assert foreign.status_code==422
+
+
+def test_session_import_requires_adapter_verification(client,headers,monkeypatch):
+    monkeypatch.setattr(config,'SESSION_ENCRYPTION_KEY',Fernet.generate_key().decode())
+    a=account(client,headers)
+    monkeypatch.setattr(workspace,'request',lambda *args,**kw:{'ok':True,'status':'invalid','error':'Cookie 已失效'})
+    r=client.post(f'/api/v1/workspace/accounts/{a["id"]}/session-import',headers=headers,
+        json={'platform':'douyin','session':{'cookies':[{'name':'sessionid','value':'x'*20,'domain':'.douyin.com'}]}})
+    assert r.status_code==422 and 'Cookie 已失效' in r.text
+    with SessionLocal() as db:
+        row=db.get(WorkspaceAccount,a['id'])
+        assert row.status=='disconnected' and not row.session_ciphertext
+        assert db.scalar(select(AutomationEvent).where(AutomationEvent.action=='session_import')) is None
+
+
+def test_refresh_restores_imported_session_after_adapter_restart(monkeypatch):
+    import asyncio
+    from app.login_adapter import BrowserManager
+    manager=BrowserManager();called=[]
+    async def restore(account_id,platform,cookies):
+        called.append((account_id,platform,cookies))
+        return {'ok':True,'status':'connected','session':{'handle':'restored'},
+                'nickname':'恢复账号','expires_at':(datetime.now(timezone.utc)+timedelta(days=1)).isoformat()}
+    monkeypatch.setattr(manager,'_import_locked',restore)
+    data=asyncio.run(manager.refresh(1,'',{'cookies':[{'name':'sessionid','value':'x'}]},'douyin'))
+    assert data['status']=='connected' and data['session']['handle']=='restored'
+    assert called and called[0][:2]==(1,'douyin')
+
+
 def test_refresh_accepts_late_phone_confirmation_after_qr_expiry(monkeypatch):
     import asyncio,io
     from PIL import Image

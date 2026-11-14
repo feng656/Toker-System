@@ -7,7 +7,8 @@ from .api import operate, admin, row, as_dict
 from .db import get_db, utcnow
 from .models import (Platform, WorkspaceAccount, WorkspaceJob, ContentVariant, CommentTask, CommentAction,
                      ReplyTemplate, DMPolicy, DMMessage, AIProvider, AutomationEvent)
-from .phase2_schemas import AccountIn, AccountLoginIn, LoginPlatformIn, PublishJobIn, CommentTaskIn, DiscoverIn, ReplyTemplateIn, DMPolicyIn, DMIn
+from .phase2_schemas import (AccountIn, AccountLoginIn, LoginPlatformIn, PublishJobIn, CommentTaskIn,
+                             DiscoverIn, ReplyTemplateIn, DMPolicyIn, DMIn, SessionImportIn)
 from . import workspace, engagement, storage, config
 from .tasks import lock
 
@@ -75,6 +76,12 @@ def refresh(aid:int,db:Session=Depends(get_db),actor=Depends(operate)):
 @api.post('/workspace/accounts/{aid}/logout', tags=['工作空间'])
 def logout(aid:int,db:Session=Depends(get_db),actor=Depends(operate)):
     workspace.logout(db,row(db,WorkspaceAccount,aid),actor.id);return {'ok':True}
+
+
+@api.post('/workspace/accounts/{aid}/session-import', tags=['工作空间'])
+def session_import(aid:int,body:SessionImportIn,db:Session=Depends(get_db),actor=Depends(operate)):
+    """导入本机浏览器 Cookie；云端适配器校验登录态后才标记 connected。"""
+    return workspace.import_session(db,row(db,WorkspaceAccount,aid),body,actor.id)
 
 
 @api.get('/workspace/accounts/{aid}/session', tags=['工作空间'])

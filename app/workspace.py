@@ -4,7 +4,7 @@
 import base64
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException
@@ -31,6 +31,98 @@ def decrypt(value):
         return json.loads(cipher().decrypt(value.encode()))
     except (InvalidToken, ValueError):
         raise HTTPException(409, '会话无法解密，请重新登录')
+
+
+# Cookie 导入只允许平台自己的域，避免把任意站点的凭据写进云端浏览器。
+SESSION_COOKIE_DOMAINS = {'douyin': ('douyin.com', 'amemv.com')}
+SESSION_COOKIE_NAMES = {'douyin': ('sessionid', 'sessionid_ss')}
+
+
+def _same_site(value):
+    return {
+        'no_restriction': 'None', 'none': 'None',
+        'lax': 'Lax', 'strict': 'Strict',
+    }.get(str(value or '').lower())
+
+
+def normalize_cookies(platform_code, cookies):
+    """把 Chrome 导出的 Cookie 规范成适配器可写入 Playwright 的结构。"""
+    suffixes = SESSION_COOKIE_DOMAINS.get(platform_code)
+    if not suffixes:
+        raise HTTPException(422, '该平台暂未开放 Cookie 导入')
+    result, seen, total = [], set(), 0
+    for item in cookies:
+        domain = str(item.domain or '').strip().lower()
+        bare = domain.lstrip('.')
+        if not bare or not any(bare == suffix or bare.endswith('.' + suffix) for suffix in suffixes):
+            raise HTTPException(422, f'Cookie 域名不属于该平台：{domain or "空"}')
+        key = (item.name, domain, item.path)
+        if key in seen:
+            continue
+        seen.add(key)
+        expires = item.expires if item.expires is not None else item.expirationDate
+        if item.session or expires is None or expires <= 0:
+            expires = None
+        entry = {
+            'name': item.name,
+            'value': item.value,
+            'domain': domain,
+            'path': item.path or '/',
+            'httpOnly': bool(item.httpOnly),
+            'secure': bool(item.secure),
+        }
+        if expires is not None:
+            entry['expires'] = float(expires)
+        same_site = _same_site(item.sameSite)
+        if same_site:
+            entry['sameSite'] = same_site
+        result.append(entry)
+        total += len(item.name) + len(item.value)
+    if total > 64 * 1024:
+        raise HTTPException(422, 'Cookie 数据过大')
+    names = {c['name'] for c in result}
+    required = SESSION_COOKIE_NAMES.get(platform_code, ())
+    if required and not names.intersection(required):
+        raise HTTPException(422, '缺少平台登录会话 Cookie（sessionid / sessionid_ss）')
+    return result
+
+
+def import_session(db, account, body, actor_id):
+    """导入本机浏览器已登录的 Cookie；必须由云端适配器实际校验通过才落库。"""
+    cipher()
+    lock(db, f'account:{account.id}')
+    db.refresh(account)
+    platform = db.get(Platform, account.platform_id)
+    from .login_catalog import check_login_platform
+    check_login_platform(platform)
+    if body.platform != platform.code:
+        raise HTTPException(409, '导入的平台与账号平台不一致')
+    cookies = normalize_cookies(platform.code, body.session.cookies)
+    data = request('accounts/import', {'account_id': account.id, 'platform': platform.code,
+                                       'cookies': cookies})
+    if (data.get('status') != 'connected' or not isinstance(data.get('session'), dict)
+            or not data['session'].get('handle')):
+        reason = str(data.get('error') or '').strip()[:120]
+        raise HTTPException(422, 'Cookie 未通过平台登录校验' + (f'：{reason}' if reason else ''))
+    expires_at = expiry(data.get('expires_at'))
+    account.session_ciphertext = encrypt({
+        'handle': str(data['session']['handle'])[:200],
+        'cookies': cookies,
+        'source': 'cookie_import',
+    })
+    account.session_expires_at = expires_at
+    account.status, account.error = 'connected', ''
+    account.nickname = str(data.get('nickname') or body.session.nickname or account.label)[:100]
+    account.avatar_url = str(data.get('avatar_url') or body.session.avatar_url or '')[:700]
+    account.qr_object_ref, account.qr_expires_at, account.login_attempt_id = '', None, ''
+    event(db, 'account', account.id, 'session_import', actor_id, {
+        'platform': platform.code,
+        'cookie_count': len(cookies),
+        'cookie_names': sorted({c['name'] for c in cookies})[:30],
+        'expires_at': expires_at.isoformat(),
+    })
+    db.commit()
+    return public_account(account)
 
 
 def event(db, resource, resource_id, action, actor_id=None, detail=None):
@@ -187,7 +279,8 @@ def refresh(db, account, actor_id):
         raise HTTPException(409, '请先获取二维码并发起登录')
     before = account.status
     payload = {'account_id': account.id, 'platform': platform.code, 'attempt_id': account.login_attempt_id}
-    if account.status == 'connected':
+    if account.session_ciphertext:
+        # 导入的 Cookie 会话在适配器重启后需要靠这里恢复上下文。
         payload['session'] = decrypt(account.session_ciphertext)
     data = request('accounts/refresh', payload)
     apply_login(account, data)
