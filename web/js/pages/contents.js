@@ -202,6 +202,80 @@ export default {
       video.open = false;
     }
 
+    /* ---------------- 沙盒发布（R2 闭环） ---------------- */
+    const publish = reactive({
+      open: false, loadingAccounts: false, accounts: [], busy: false, error: '',
+      variant: null, accountId: null, job: null,
+    });
+
+    function publishEligible(v) {
+      return !!(v && v.is_current && v.status === 'pending' && v.confirm_status === 'confirmed'
+        && v.compliance_ok && !v.published_url);
+    }
+
+    const publishAccounts = computed(() => {
+      if (!publish.variant) return [];
+      return (publish.accounts || [])
+        .filter((a) => !a.deleted_at && a.platform_id === publish.variant.platform_id)
+        .sort((a, b) => (a.status === 'connected' ? 0 : 1) - (b.status === 'connected' ? 0 : 1));
+    });
+
+    async function loadWsAccounts() {
+      publish.loadingAccounts = true;
+      publish.error = '';
+      try {
+        publish.accounts = (await phase2Api.wsAccounts()) || [];
+      } catch (e) {
+        publish.accounts = [];
+        publish.error = '工作空间账号加载失败：' + errorMessage(e);
+      } finally {
+        publish.loadingAccounts = false;
+      }
+    }
+
+    async function openPublish(v) {
+      publish.variant = v;
+      publish.job = null;
+      publish.accountId = null;
+      publish.open = true;
+      await loadWsAccounts();
+      const first = publishAccounts.value.find((a) => a.status === 'connected') || publishAccounts.value[0];
+      publish.accountId = first ? first.id : null;
+    }
+
+    function goWorkbench() {
+      publish.open = false;
+      window.location.hash = '#/work';
+    }
+
+    async function submitPublish() {
+      const v = publish.variant;
+      const account = (publish.accounts || []).find((a) => a.id === publish.accountId);
+      if (!v) return;
+      if (!account) { notify.err('请选择同平台的工作空间账号'); return; }
+      if (account.status !== 'connected') {
+        notify.err(`账号「${account.label}」当前状态为「${account.status}」，请先在工作台完成扫码登录`);
+        return;
+      }
+      publish.busy = true;
+      publish.error = '';
+      try {
+        const job = await phase2Api.publishJob({
+          request_key: `variant_${v.id}_${account.id}`,
+          account_id: account.id,
+          variant_id: v.id,
+        });
+        publish.job = job;
+        notify.ok(`发布任务 #${job.id} 已创建，请到工作台查看任务进度`);
+        await load();
+      } catch (e) {
+        publish.error = errorMessage(e);
+        notify.err(publish.error);
+      } finally {
+        publish.busy = false;
+      }
+    }
+
     /* ---------------- 数据加载 ---------------- */
 
     function ensureDraft(v) {
@@ -781,6 +855,7 @@ export default {
       load();
       loadTodo();
       loadPlatforms();
+      loadWsAccounts();
       window.addEventListener('hashchange', onHashChange);
     });
 
@@ -917,6 +992,7 @@ export default {
       variantTagType, confirmTagType, publishTagType,
       tab, pfList, vq, vlist, vtotal, vloading, vselected, bulkBusy,
       draftDlg, draftSaving, draftForm,
+      publish, publishEligible, publishAccounts, openPublish, submitPublish, goWorkbench,
       applyVariantFilter, bulkApprove, bulkReject, openDraft, saveDraft, vStatusName,
     };
   },
@@ -1061,6 +1137,7 @@ export default {
         <el-tag v-else size="small" type="info">历史</el-tag>
         <el-button size="small" text type="primary" @click="toggle(c)">{{ openMap[c.id] ? '收起' : '展开 / 编辑' }}</el-button>
         <el-button size="small" text @click="openCompare(c, v)">版本对比</el-button>
+        <el-button v-if="canWriteContent && publishEligible(v)" size="small" type="primary" plain @click="openPublish(v)">沙盒发布</el-button>
         <el-tag size="small" :type="variantTagType(v.status)">{{ variantStatusName(v.status) }}</el-tag>
         <el-tag size="small" :type="v.quality_score >= 85 ? 'success' : (v.quality_score >= 70 ? 'warning' : 'danger')">
           质量分 {{ v.quality_score || '-' }}
@@ -1314,6 +1391,38 @@ export default {
     </div>
     <div v-else class="state-box">只有一个版本，暂无可对比的历史版本。</div>
     <div class="gap-note">diff 在本机计算，不上传正文到第三方；「设为当前版本」需后端提供切换接口（M-P0-05），当前只读。</div>
+  </template>
+</el-dialog>
+
+<el-dialog v-model="publish.open" title="沙盒发布" width="600px">
+  <div v-if="publish.variant" class="mb10">
+    <div class="muted">内容版本</div>
+    <b>#{{ publish.variant.id }} · {{ platformName(publish.variant.platform) }} · r{{ publish.variant.revision }}</b>
+    <div class="muted mt6">标题：{{ publish.variant.cover_text || '（无）' }}</div>
+  </div>
+  <div v-if="publish.error" class="alert-strip error mt10">{{ publish.error }}</div>
+  <div v-if="publish.loadingAccounts" class="card"><el-skeleton :rows="2" animated /></div>
+  <div v-else-if="!publishAccounts.length" class="alert-strip warn">
+    当前平台还没有工作空间账号。请先到「工作台 → 平台通道」添加并扫码登录同平台账号。
+  </div>
+  <template v-else>
+    <div class="muted mb6">选择已连接的同平台账号（任务提交到沙盒适配器，步骤与截图全程留痕）</div>
+    <el-select v-model="publish.accountId" style="width:100%" placeholder="选择工作空间账号">
+      <el-option v-for="a in publishAccounts" :key="a.id"
+                 :label="a.label + '（' + (a.status === 'connected' ? '已连接' : a.status) + '）'"
+                 :value="a.id" :disabled="a.status !== 'connected'"></el-option>
+    </el-select>
+    <div class="gap-note mt10">
+      幂等键：variant_{{ publish.variant.id }}_{{ publish.accountId || '账号' }}；重复提交不会重复建任务。
+    </div>
+  </template>
+  <div v-if="publish.job" class="alert-strip ok mt10">
+    任务 #{{ publish.job.id }} 已创建，当前状态：{{ publish.job.status }}。请到工作台查看任务进度。
+  </div>
+  <template #footer>
+    <el-button @click="publish.open = false">关闭</el-button>
+    <el-button v-if="publish.job" type="primary" @click="goWorkbench">去工作台查看</el-button>
+    <el-button v-else type="primary" :loading="publish.busy" :disabled="!publish.accountId || publish.loadingAccounts" @click="submitPublish">创建发布任务</el-button>
   </template>
 </el-dialog>
 

@@ -8,7 +8,7 @@ from .db import get_db, utcnow
 from .models import (Platform, WorkspaceAccount, WorkspaceJob, ContentVariant, CommentTask, CommentAction,
                      ReplyTemplate, DMPolicy, DMMessage, AIProvider, AutomationEvent)
 from .phase2_schemas import AccountIn, AccountLoginIn, LoginPlatformIn, PublishJobIn, CommentTaskIn, DiscoverIn, ReplyTemplateIn, DMPolicyIn, DMIn
-from . import workspace, engagement, storage
+from . import workspace, engagement, storage, config
 from .tasks import lock
 
 api = APIRouter()
@@ -280,6 +280,16 @@ def approve_dm(mid:int,db:Session=Depends(get_db),actor=Depends(operate)):
 @api.post('/dm/messages/{mid}/send', tags=['私信接管'])
 def send_dm(mid:int,db:Session=Depends(get_db),actor=Depends(operate)):
     return as_dict(engagement.send_dm(db,row(db,DMMessage,mid),actor.id))
+
+
+@api.get('/automation/status', tags=['自动化审计'])
+def automation_status(_=Depends(operate)):
+    # 前端在执行/发送前预检：关闭时给出可读提示，而不是等写操作返回 503。
+    return {'enabled': config.AUTOMATION_ENABLED,
+            'comment_send_enabled': config.AUTOMATION_ENABLED,
+            'dm_send_enabled': config.AUTOMATION_ENABLED,
+            'interval_seconds': config.AUTOMATION_INTERVAL_SECONDS,
+            'daily_limit': config.AUTOMATION_DAILY_LIMIT}
 
 
 @api.get('/automation/events', tags=['自动化审计'])

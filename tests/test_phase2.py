@@ -56,7 +56,7 @@ def test_platform_code_immutable_roles_and_invalid_codes(client,headers):
     assert client.put(f'/api/v1/platforms/{p["id"]}',json={'code':'renamed','name':'改名'},headers=headers).status_code==409
     assert client.post('/api/v1/platforms',json={'code':'../private','name':'坏代码'},headers=headers).status_code==422
     sales=token_for(client,'sales01')
-    for path in ('/platforms','/workspace/accounts','/assets','/dm/messages','/automation/events'):
+    for path in ('/platforms','/workspace/accounts','/assets','/dm/messages','/automation/events','/automation/status'):
         assert client.get('/api/v1'+path,headers=sales).status_code==403
 
 
@@ -324,6 +324,10 @@ def test_dm_high_risk_escalates_and_ai_candidate_requires_approval(client,header
 def test_automation_daily_budget_and_default_off(client,headers,connected,monkeypatch):
     tid=make_comments(client,headers,connected,monkeypatch);post(client,headers,f'/comment-tasks/{tid}/approve')
     monkeypatch.setattr(config,'AUTOMATION_ENABLED',False)
+    status=client.get('/api/v1/automation/status',headers=headers).json()
+    assert status['enabled'] is False and status['comment_send_enabled'] is False
+    assert status['interval_seconds']>=0 and status['daily_limit']>=0
     assert client.post(f'/api/v1/comment-tasks/{tid}/run',headers=headers).status_code==503
     monkeypatch.setattr(config,'AUTOMATION_ENABLED',True);monkeypatch.setattr(config,'AUTOMATION_DAILY_LIMIT',0)
+    assert client.get('/api/v1/automation/status',headers=headers).json()['enabled'] is True
     assert client.post(f'/api/v1/comment-tasks/{tid}/run',headers=headers).status_code==429

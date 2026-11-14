@@ -6,6 +6,7 @@ import { ref, reactive, computed, onMounted } from '../core/vue.js';
 import { dashboardApi, metricApi } from '../api/business.js';
 import { contentApi } from '../api/content.js';
 import { leadApi } from '../api/business.js';
+import { phase2Api } from '../api/phase2.js';
 import { notify, errorMessage } from '../core/ui.js';
 import { todayStr, platformName, fmtDate } from '../core/format.js';
 
@@ -15,6 +16,8 @@ export default {
     const funnel = reactive({ published: 0, views: 0, interactions: 0, leads: 0, high_intent: 0 });
     const contents = ref([]);
     const leads = ref([]);
+    const platformRows = ref([]);
+    const platformError = ref('');
     const loading = ref(false);
     const error = ref('');
     const forbidden = ref(false);
@@ -29,15 +32,23 @@ export default {
       loading.value = true;
       error.value = '';
       forbidden.value = false;
+      platformError.value = '';
       try {
-        const [fun, cs, ls] = await Promise.all([
+        const [fun, cs, ls, pfs] = await Promise.all([
           dashboardApi.funnel(),
           contentApi.list(),
           leadApi.list(),
+          phase2Api.platformDashboard().catch(() => null),
         ]);
         Object.assign(funnel, fun || {});
         contents.value = cs || [];
         leads.value = ls || [];
+        if (pfs) {
+          platformRows.value = pfs || [];
+        } else {
+          platformRows.value = [];
+          platformError.value = '平台维度加载失败（或当前角色无看板权限），其他看板数据不受影响。';
+        }
       } catch (e) {
         error.value = errorMessage(e);
         forbidden.value = !!(e && e.forbidden);
@@ -110,6 +121,13 @@ export default {
 
     const maxTrend = computed(() => Math.max(1, ...trend.value.map((d) => d.count)));
 
+    const platformTotals = computed(() => platformRows.value.reduce((acc, p) => ({
+      published: acc.published + Number(p.published || 0),
+      views: acc.views + Number(p.views || 0),
+      interactions: acc.interactions + Number(p.interactions || 0),
+      leads: acc.leads + Number(p.leads || 0),
+    }), { published: 0, views: 0, interactions: 0, leads: 0 }));
+
     async function saveMetric() {
       if (!metricForm.variant_id) { notify.err('请填写版本 ID'); return; }
       saving.value = true;
@@ -133,7 +151,8 @@ export default {
     onMounted(load);
 
     return {
-      funnel, contents, leads, loading, error, forbidden, metricForm, saving,
+      funnel, contents, leads, platformRows, platformError, platformTotals,
+      loading, error, forbidden, metricForm, saving,
       allVariants, publishedVariants, consistency, anomalies, duplicateContacts, trend, maxTrend,
       load, saveMetric, platformName, fmtDate,
     };
@@ -173,6 +192,33 @@ export default {
   </div>
   <div class="card" v-else>
     <div class="alert-strip ok">✓ 数字与明细一致：已发布 {{ consistency.server }} 条 = 明细中带有效链接的版本 {{ consistency.detail }} 条。</div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <h4 class="card-title" style="margin:0">平台维度</h4>
+      <span class="muted tiny" v-if="platformRows.length">
+        合计：已发布 {{ platformTotals.published }} · 曝光 {{ platformTotals.views }} · 互动 {{ platformTotals.interactions }} · 线索 {{ platformTotals.leads }}
+      </span>
+    </div>
+    <div v-if="platformError" class="alert-strip warn">{{ platformError }}</div>
+    <el-table v-else :data="platformRows" size="small" empty-text="暂无平台数据">
+      <el-table-column prop="name" label="平台" min-width="150">
+        <template #default="s"><span class="pf" :class="'pf-' + s.row.platform">{{ s.row.name }}</span></template>
+      </el-table-column>
+      <el-table-column label="启用" width="80">
+        <template #default="s">
+          <el-tag size="small" :type="s.row.enabled ? 'success' : 'info'">{{ s.row.enabled ? '启用' : '停用' }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="published" label="已发布" width="100" align="right"></el-table-column>
+      <el-table-column prop="views" label="曝光" width="110" align="right"></el-table-column>
+      <el-table-column prop="interactions" label="互动" width="100" align="right"></el-table-column>
+      <el-table-column prop="leads" label="线索" width="100" align="right"></el-table-column>
+    </el-table>
+    <div class="gap-note">
+      数据源 /dashboard/platforms：已发布按该平台的 published 版本统计；曝光取 metrics 合计；互动与线索按 platform 归集。停用平台保留历史数据。
+    </div>
   </div>
 
   <div class="grid3">

@@ -148,6 +148,7 @@ export default {
     const dmMsgs = ref([]);
     const ctasks = ref([]);
     const p2Loading = ref(false);
+    const automation = ref(null);
     const ctForm = reactive({ account_id: null, keyword: '', mode: 'manual', draft: '', video_limit: 5, comments_per_video: 10, date_from: '', sort_order: 'latest' });
     const ctBusy = reactive({});
     const tplForm = reactive({ name: '', body: '', enabled: true });
@@ -271,13 +272,15 @@ export default {
     async function loadPhase2() {
       p2Loading.value = true;
       try {
-        const [accs, tmpls, provs, tasks, msgs] = await Promise.all([
+        const [accs, tmpls, provs, tasks, msgs, auto] = await Promise.all([
           phase2Api.wsAccounts().catch(() => []),
           phase2Api.replyTemplates().catch(() => []),
           phase2Api.providers().catch(() => []),
           phase2Api.commentTasks().catch(() => []),
           phase2Api.dmMessages().catch(() => []),
+          phase2Api.automationStatus().catch(() => null),
         ]);
+        automation.value = auto;
         wsAccs.value = accs || [];
         dmTmpls.value = tmpls || [];
         dmProvs.value = (provs || []).filter((p) => p.enabled);
@@ -293,6 +296,28 @@ export default {
     function accLabel(id) {
       const a = wsAccs.value.find((x) => x.id === id);
       return a ? a.label : '账号#' + id;
+    }
+
+    const accStatusName = (s) => ({
+      connected: '已连接', awaiting_scan: '待扫码', expired: '登录已过期',
+      disconnected: '未连接', error: '登录异常',
+    }[s] || s || '未知');
+
+    function precheckRun(t) {
+      const a = wsAccs.value.find((x) => x.id === t.account_id);
+      if (!a) {
+        notify.warn(`找不到任务所属账号 #${t.account_id}，请到工作台确认账号是否已被删除。`);
+        return false;
+      }
+      if (a.status !== 'connected') {
+        notify.warn(`账号「${a.label}」当前未连接（${accStatusName(a.status)}）。请先到工作台完成扫码登录，再执行评论任务。`);
+        return false;
+      }
+      if (automation.value && automation.value.enabled === false) {
+        notify.warn('自动发送当前关闭（AUTOMATION_ENABLED=false）。请部署方确认平台许可并启用后再执行；发现、生成与批准仍可正常操作。');
+        return false;
+      }
+      return true;
     }
 
     async function createCommentTask() {
@@ -315,6 +340,7 @@ export default {
     }
 
     async function taskAction(t, action) {
+      if (action === 'run' && !precheckRun(t)) return;
       ctBusy[t.id] = true;
       try {
         let d = null;
@@ -405,6 +431,7 @@ export default {
       platformName, intentName, identityName, leadStatusName, fmtDateTime, bizLineName,
       LEAD_STATUS, INTENT, IDENTITY, isAdmin, canWriteContent, TOPIC_THEMES,
       ltab, wsAccs, dmTmpls, dmProvs, dmMsgs, ctasks, p2Loading, ctForm, ctBusy,
+      automation, accStatusName, precheckRun,
       tplForm, dmForm, dmBusy,
       loadPhase2, accLabel, createCommentTask, taskAction, addTemplate, saveDmPolicy, dmAction,
       ctStatusName, dmStatusName,
@@ -493,11 +520,14 @@ export default {
   </el-tab-pane>
 
   <el-tab-pane label="评论互动（二期 · 授权评论）" name="comments">
+    <div v-if="automation && automation.enabled === false" class="alert-strip warn">
+      自动发送当前关闭（AUTOMATION_ENABLED=false）：可以创建任务、发现视频、生成评论和人工批准，但「执行」会被拦截。请部署方确认平台许可后启用。
+    </div>
     <div class="card">
       <h4 class="card-title">新建评论任务</h4>
       <div class="row">
-        <el-select v-model="ctForm.account_id" size="small" style="width:170px" placeholder="平台账号">
-          <el-option v-for="a in wsAccs" :key="a.id" :label="accLabel(a.id) + (a.status === 'connected' ? '（已登录）' : '（未登录）')" :value="a.id"></el-option>
+        <el-select v-model="ctForm.account_id" size="small" style="width:190px" placeholder="平台账号">
+          <el-option v-for="a in wsAccs" :key="a.id" :label="accLabel(a.id) + '（' + accStatusName(a.status) + '）'" :value="a.id"></el-option>
         </el-select>
         <el-input v-model="ctForm.keyword" size="small" style="width:200px" placeholder="搜索关键词（必填）"></el-input>
         <el-select v-model="ctForm.mode" size="small" style="width:130px">

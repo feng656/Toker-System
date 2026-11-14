@@ -46,6 +46,7 @@ export const phase2Api = {
   publishJobCancel: (jid) => http.post(`/workspace/publish-jobs/${jid}/cancel`),
 
   /* ---- R7 授权评论任务 ---- */
+  automationStatus: () => http.get('/automation/status'),
   commentTasks: () => http.get('/comment-tasks'),
   commentTaskDetail: (tid) => http.get(`/comment-tasks/${tid}`),
   createCommentTask: (body) => http.post('/comment-tasks', body),
@@ -75,6 +76,9 @@ export const phase2Api = {
   /* ---- R10 登录策略 ---- */
   authPolicy: () => http.get('/auth/policy'),
   authChallenge: () => http.post('/auth/challenge'),
+
+  /* ---- 看板平台维度 ---- */
+  platformDashboard: () => http.get('/dashboard/platforms'),
 
   /* ---- 需求反哺 ---- */
   suggestions: () => http.get('/topic-suggestions'),
