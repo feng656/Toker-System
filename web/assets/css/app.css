@@ -95,7 +95,7 @@ body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:
 .err{color:#f56c6c;font-size:13px}
 
 /* ---------- 平台 / 业务线 / 状态标签 ---------- */
-.pf{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;color:#fff;margin-right:6px}
+.pf{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;color:#fff;background:#909399;margin-right:6px}
 .pf-douyin{background:#000}.pf-shipinhao{background:#07c160}.pf-gzh{background:#1aad19}.pf-xhs{background:#ff2442}.pf-moments{background:#576b95}.pf-xianyu{background:#ffce00;color:#333}
 .line-tag{font-size:12px;padding:1px 6px;border-radius:3px}
 .line-project{background:#e8f4ff;color:#1d7dcf}.line-channel{background:#fef0e6;color:#e6792f}.line-both{background:#f0f2f5;color:#606266}
