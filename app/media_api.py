@@ -94,6 +94,14 @@ def usage(aid:int,db:Session=Depends(get_db),_=Depends(operate)):
     return [as_dict(a) for a in db.scalars(select(AssetUsage).where(AssetUsage.asset_id==aid)).all()]
 
 
+@api.get('/variants/{vid}/assets', tags=['二期素材'])
+def variant_assets(vid:int,db:Session=Depends(get_db),_=Depends(operate)):
+    row(db,ContentVariant,vid)
+    values=db.scalars(select(MediaAsset).join(AssetUsage,AssetUsage.asset_id==MediaAsset.id)
+                      .where(AssetUsage.variant_id==vid).order_by(MediaAsset.id)).all()
+    return [as_dict(a) for a in values]
+
+
 @api.post('/variants/{vid}/assets', tags=['二期素材'])
 def link_assets(vid:int,body:AssetLinkIn,db:Session=Depends(get_db),_=Depends(operate)):
     from .generator import ensure_current

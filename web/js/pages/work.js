@@ -16,7 +16,6 @@ import { contentApi } from '../api/content.js';
 import { platformApi } from '../api/platform.js';
 import { phase2Api } from '../api/phase2.js';
 import { dashboardApi } from '../api/business.js';
-import { materialApi } from '../api/library.js';
 import { notify, errorMessage } from '../core/ui.js';
 import {
   platformName, copyText, composeCopyText, PLATFORM_HOME, bizLineClass, bizLineName, validatePublishUrl,
@@ -92,11 +91,11 @@ export default {
       }
     }
 
-    /** 素材覆盖统计：失败不阻塞工作台 */
+    /** 媒体素材覆盖统计：读 /assets（图片/视频），失败不阻塞工作台 */
     async function loadMaterials() {
       materialError.value = '';
       try {
-        const list = await materialApi.list();
+        const list = await phase2Api.assets({ limit: 200 });
         materials.value = list || [];
       } catch (e) {
         materials.value = [];
@@ -105,12 +104,14 @@ export default {
     }
 
     const coverage = computed(() => {
-      const c = { public: 0, masked: 0, internal: 0, total: 0 };
+      const c = { public: 0, masked: 0, internal: 0, total: 0, image: 0, video: 0 };
       (materials.value || []).forEach((m) => {
         const k = m.publicity || 'internal';
         if (c[k] === undefined) c[k] = 0;
         c[k] += 1;
         c.total += 1;
+        if (m.kind === 'image') c.image += 1;
+        if (m.kind === 'video') c.video += 1;
       });
       return c;
     });
@@ -299,6 +300,7 @@ export default {
     const sandbox = reactive({
       open: false, loading: false, accounts: [], accountId: null, busy: false, error: '',
       job: null, variant: null, shots: [],
+      assets: [], videoLibrary: [], assetLoading: false, assetError: '', pickVideoId: null, assetBusy: false,
     });
 
     /** 当前 composer 的来源版本；列表刷新后优先用最新数据，找不到时回退投放时的快照 */
@@ -337,15 +339,79 @@ export default {
         return '该内容版本尚未审核确认或已发布，请先在内容管理完成审核';
       }
       if (v.compliance_ok === false) return '该内容命中合规红线，不能沙盒发布';
-      const accounts = (wsAccounts.value || []).filter((a) => !a.deleted_at && a.platform_id === v.platform_id);
-      if (!accounts.length) {
-        return `当前平台还没有工作空间账号，请先在下方「平台账号」添加并扫码连接${curChannel.value.name}账号`;
-      }
-      if (!accounts.some((a) => a.status === 'connected')) {
-        return `请先在工作台平台工作空间扫码连接${curChannel.value.name}账号`;
-      }
+      // 账号未连接时也允许打开弹窗：弹窗内可先补齐发布素材，再引导去扫码。
       return '';
     });
+
+    /** 当前版本已关联的视频素材；视频平台沙盒发布依赖它上传 */
+    const sandboxLinkedVideo = computed(() =>
+      (sandbox.assets || []).find((a) => a.kind === 'video') || null);
+
+    /** 读取当前版本已关联素材与素材库公开视频，供沙盒弹窗选择/核对 */
+    async function loadSandboxAssets(v) {
+      if (!v) return;
+      sandbox.assetLoading = true;
+      sandbox.assetError = '';
+      try {
+        const [linked, videos] = await Promise.all([
+          phase2Api.variantAssets(v.id),
+          phase2Api.assets({ kind: 'video', publicity: 'public', limit: 200 }),
+        ]);
+        sandbox.assets = linked || [];
+        sandbox.videoLibrary = videos || [];
+      } catch (e) {
+        sandbox.assetError = errorMessage(e);
+      } finally {
+        sandbox.assetLoading = false;
+      }
+    }
+
+    /** 把素材库视频关联到当前版本；关联会重置审核状态，随即按当前规则重新审核。 */
+    async function linkSandboxVideo() {
+      const v = sandbox.variant;
+      const aid = sandbox.pickVideoId;
+      if (!v || !aid) return;
+      const asset = (sandbox.videoLibrary || []).find((a) => a.id === aid);
+      try {
+        await EP().ElMessageBox.confirm(
+          `将把「${asset ? asset.title : '素材 #' + aid}」关联到内容版本 #${v.id}。`
+          + '关联会重置该版本的审核状态，并在下一步按当前合规/质检规则重新审核；通过后才能进入沙盒发布。',
+          '关联视频素材',
+          { type: 'warning', confirmButtonText: '关联并重新审核', cancelButtonText: '取消' },
+        );
+      } catch (e) {
+        return;
+      }
+      sandbox.assetBusy = true;
+      sandbox.assetError = '';
+      try {
+        await phase2Api.linkVariantAssets(v.id, { asset_ids: [aid], expected_version: v.version });
+        const linked = await phase2Api.variant(v.id);
+        try {
+          await phase2Api.bulkReview({
+            variant_ids: [v.id],
+            action: 'approve',
+            expected_versions: { [v.id]: linked.version },
+          });
+        } catch (reviewError) {
+          sandbox.assetError = '视频已关联，但自动重新审核未通过：' + errorMessage(reviewError)
+            + '；请到内容管理处理后再发布。';
+          notify.warn(sandbox.assetError);
+          await loadSandboxAssets(v);
+          return;
+        }
+        const approved = await phase2Api.variant(v.id);
+        sandbox.variant = approved;
+        sandbox.pickVideoId = null;
+        await Promise.all([loadAll(), loadWorkspace(), loadSandboxAssets(approved)]);
+        notify.ok('视频已关联并完成审核，可以进入沙盒发布');
+      } catch (e) {
+        sandbox.assetError = errorMessage(e);
+        notify.err(sandbox.assetError);
+      } finally {
+        sandbox.assetBusy = false;
+      }
+    }
 
     async function openSandboxPublish() {
       if (sandboxBlock.value) {
@@ -359,6 +425,11 @@ export default {
       sandbox.job = null;
       sandbox.shots = [];
       sandbox.accountId = null;
+      sandbox.assets = [];
+      sandbox.videoLibrary = [];
+      sandbox.assetError = '';
+      sandbox.pickVideoId = null;
+      sandbox.assetBusy = false;
       try {
         // 打开弹窗时重新取账号，避免刚扫码连接后页面状态仍是旧的
         const list = await phase2Api.wsAccounts();
@@ -371,6 +442,7 @@ export default {
       } finally {
         sandbox.loading = false;
       }
+      loadSandboxAssets(sandbox.variant);
     }
 
     function goConnectAccount() {
@@ -607,7 +679,7 @@ export default {
       wsJobs, wsAccounts, wsLoading, wsError, loadWorkspace, openJobRecord,
       jobStatusName, jobStatusTag, accountStatusName,
       sandbox, sandboxAccounts, sandboxHasConnected, sandboxCanSubmit, sandboxBlock, sandboxSessionError,
-      openSandboxPublish, goConnectAccount, submitSandboxPublish,
+      sandboxLinkedVideo, openSandboxPublish, goConnectAccount, submitSandboxPublish, linkSandboxVideo,
       runSandboxJob, confirmSandboxJob, cancelSandboxJob,
       isAdmin,
     };
@@ -645,7 +717,7 @@ export default {
       <div class="card wk-cover">
         <div class="row" style="justify-content:space-between">
           <b>素材库覆盖</b>
-          <span class="muted">可公开 {{ coverage.public }} 条 · 需脱敏 {{ coverage.masked }} 条 · 仅内部 {{ coverage.internal }} 条</span>
+          <span class="muted">图片 {{ coverage.image }} · 视频 {{ coverage.video }} · 可公开 {{ coverage.public }} 条 / 共 {{ coverage.total }} 条</span>
         </div>
         <div v-if="materialError" class="muted mt6">素材覆盖统计读取失败：{{ materialError }}（不影响投放）</div>
         <div v-else-if="materialEmpty" class="alert-strip warn mt10">
@@ -656,7 +728,7 @@ export default {
           </div>
         </div>
         <div v-else class="muted mt6">
-          图片/视频仍需人工上传到平台后台；工作台只做文案与结构，缺图不阻塞投放。
+          媒体素材需先关联到具体内容版本并通过审核，沙盒发布会按关联结果上传；未关联的素材不会自动使用。
         </div>
         <div class="row mt10">
           <el-button size="small" text type="primary" @click="gotoMaterials">去素材库补充</el-button>
@@ -842,6 +914,38 @@ export default {
   <div v-if="sandbox.loading" class="card"><el-skeleton :rows="2" animated /></div>
 
   <template v-else-if="!sandbox.job">
+    <div class="card" style="padding:12px;margin-bottom:12px">
+      <div class="row" style="justify-content:space-between">
+        <b>发布素材</b>
+        <span class="muted tiny">素材库公开视频 {{ sandbox.videoLibrary.length }} 条</span>
+      </div>
+      <div v-if="sandbox.assetLoading" class="muted mt6">素材关联读取中…</div>
+      <div v-else-if="sandbox.assetError" class="alert-strip error mt6">{{ sandbox.assetError }}</div>
+      <template v-else>
+        <div v-if="sandboxLinkedVideo" class="alert-strip ok mt6">
+          已关联视频：<b>{{ sandboxLinkedVideo.title }}</b>（素材 #{{ sandboxLinkedVideo.id }}）
+        </div>
+        <template v-else>
+          <div class="alert-strip warn mt6">
+            该内容版本未关联视频素材，沙盒发布会因缺少视频而失败。请从素材库选择一条公开视频；关联会重置审核状态，系统会立即按当前规则重新审核，通过后才能发布。
+          </div>
+          <div v-if="sandbox.videoLibrary.length" class="row mt10">
+            <el-select v-model="sandbox.pickVideoId" placeholder="选择公开视频素材" style="flex:1">
+              <el-option v-for="a in sandbox.videoLibrary" :key="a.id"
+                         :label="'#' + a.id + ' · ' + a.title" :value="a.id"></el-option>
+            </el-select>
+            <el-button type="primary" plain :loading="sandbox.assetBusy"
+                       :disabled="!sandbox.pickVideoId || sandbox.assetBusy"
+                       @click="linkSandboxVideo">关联并重新审核</el-button>
+          </div>
+          <div v-else class="muted mt6">
+            素材库还没有可公开的视频。
+            <el-button size="small" text type="primary" @click="gotoMaterials">去素材库上传</el-button>
+          </div>
+        </template>
+      </template>
+    </div>
+
     <div v-if="!sandboxAccounts.length" class="alert-strip warn">
       当前平台还没有工作空间账号。请先在下方「平台账号」添加并扫码连接{{ curChannel.name }}账号。
       <div class="mt10"><el-button size="small" @click="goConnectAccount">去添加 / 连接账号</el-button></div>

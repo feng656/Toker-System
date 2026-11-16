@@ -13,6 +13,7 @@ export const phase2Api = {
 
   /* ---- R4 版本筛选 / 批量审核 / 草稿 ---- */
   variants: (query) => http.get('/variants', query),
+  variant: (vid) => http.get(`/variants/${vid}`),
   bulkReview: (body) => http.post('/variants/bulk-review', body),
   createDraft: (body) => http.post('/contents/drafts', body),
 
@@ -24,6 +25,8 @@ export const phase2Api = {
 
   /* ---- R3 素材（图片媒体，MinIO） ---- */
   assets: (query) => http.get('/assets', query),
+  variantAssets: (vid) => http.get(`/variants/${vid}/assets`),
+  linkVariantAssets: (vid, body) => http.post(`/variants/${vid}/assets`, body),
   uploadAssets: (fd) => http.upload('/assets/upload', fd),
   editAsset: (aid, body) => http.put(`/assets/${aid}`, body),
   assetUrl: (aid) => http.get(`/assets/${aid}/url`),

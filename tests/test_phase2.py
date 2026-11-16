@@ -360,3 +360,17 @@ def test_automation_daily_budget_and_default_off(client,headers,connected,monkey
     monkeypatch.setattr(config,'AUTOMATION_ENABLED',True);monkeypatch.setattr(config,'AUTOMATION_DAILY_LIMIT',0)
     assert client.get('/api/v1/automation/status',headers=headers).json()['enabled'] is True
     assert client.post(f'/api/v1/comment-tasks/{tid}/run',headers=headers).status_code==429
+
+
+def test_variant_assets_can_be_listed_and_linked(client,headers,image_bytes,fake_storage):
+    upload=client.post('/api/v1/assets/upload',files=[('files',('a.png',image_bytes,'image/png'))],headers=headers)
+    assert upload.status_code==201,upload.text
+    aid=upload.json()['items'][0]['id']
+    assert client.put(f'/api/v1/assets/{aid}',json={'title':'关联测试','publicity':'public'},headers=headers).status_code==200
+    v=generated(client,headers)[0]
+    assert client.get(f'/api/v1/variants/{v["id"]}/assets',headers=headers).json()==[]
+    linked=post(client,headers,f'/variants/{v["id"]}/assets',{'asset_ids':[aid],'expected_version':v['version']})
+    assert linked['asset_ids']==[aid] and linked['review_required'] is True
+    assets=client.get(f'/api/v1/variants/{v["id"]}/assets',headers=headers).json()
+    assert [a['id'] for a in assets]==[aid]
+    assert client.get(f'/api/v1/variants/{v["id"]}',headers=headers).json()['confirm_status']=='none'
