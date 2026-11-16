@@ -20,7 +20,7 @@ cp .env.example .env          # 填写 DATABASE_URL / JWT_SECRET / MINIO_*
 # 浏览器打开 http://127.0.0.1:8300
 ```
 
-- 管理员密码来自 `BOOTSTRAP_ADMIN_PASSWORD`；仅测试库设置 `DEMO_MODE=true` 后运行种子，演示账号为 `admin / yunying / sales01 / sales02`，演示密码见 `docs/DEPLOYMENT.md`，生产禁止使用。
+- 管理员密码来自 `BOOTSTRAP_ADMIN_PASSWORD`；仅测试库设置 `DEMO_MODE=true` 后运行种子，演示账号为 `admin / yunying / sales01 / sales02`，演示密码由部署环境变量 `DEMO_SEED_PASSWORD` 设置，生产禁止使用。
 - 前端不需要 `npm install` 或打包，`web/` 由 FastAPI 直接托管；修改 JS/CSS 后刷新页面即可。
 - `/api/v1/health` 检查数据库；`/docs` 与 `docs/openapi-3.1.json` 是接口联调入口。
 

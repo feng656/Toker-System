@@ -14,10 +14,13 @@ TOPICS = [('project', '方案科普', '报告厅LED大屏选型的关键问题',
 MATERIALS = [('公司简介', 'both', '自由光业务简介', '弱电智能化与音视频行业产品和技术服务。'),
              ('服务能力', 'project', '甲方线服务口径', '根据项目场景提供选型、交付与技术支持。'),
              ('服务能力', 'channel', '渠道合作口径', '面向工程商提供现货协同与技术支持，不抢甲方客户。')]
-DEMO_PASSWORD = 'Demo-Toker-2026!'
+# 演示密码只从环境变量读取，仓库中不保存任何可用口令。
+DEMO_PASSWORD = os.getenv('DEMO_SEED_PASSWORD', '')
 
 
 def seed(db, demo=False):
+    if demo and len(DEMO_PASSWORD) < 10:
+        raise RuntimeError('DEMO_MODE=true 时必须设置至少10位 DEMO_SEED_PASSWORD；仓库不保存演示口令')
     if not db.scalar(select(User).where(User.username == 'admin')):
         password = DEMO_PASSWORD if demo else os.getenv('BOOTSTRAP_ADMIN_PASSWORD', '')
         if len(password) < 10:
@@ -46,7 +49,7 @@ def main():
         seed(db, config.DEMO_MODE)
     print('初始化成功；重复执行不会重复创建账号、规则、选题或演示素材。')
     if config.DEMO_MODE:
-        print('仅演示：账号admin/yunying/sales01/sales02，密码见docs/DEPLOYMENT.md。')
+        print('仅演示：账号admin/yunying/sales01/sales02，密码取自DEMO_SEED_PASSWORD环境变量。')
 
 
 if __name__ == '__main__':

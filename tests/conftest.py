@@ -1,6 +1,8 @@
 """默认内存隔离测试；TEST_DATABASE_URL可切换专用Postgres测试schema。"""
 import os
+import secrets
 os.environ.setdefault('APP_ENV', 'test')
+os.environ.setdefault('DEMO_SEED_PASSWORD', secrets.token_urlsafe(18))
 os.environ.setdefault('DATABASE_URL', os.getenv('TEST_DATABASE_URL', 'sqlite:///:memory:'))
 os.environ.setdefault('JWT_SECRET', 'test-only-key-not-for-production-0123456789')
 os.environ.setdefault('DEMO_MODE', 'true')
