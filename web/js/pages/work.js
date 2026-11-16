@@ -832,7 +832,7 @@ export default {
 
 </template>
 
-<el-dialog v-model="sandbox.open" class="sandbox-dialog" :title="sandbox.job ? ('沙盒发布 · 任务 #' + sandbox.job.id) : '沙盒发布'" width="680px" :close-on-click-modal="false">
+<el-dialog v-model="sandbox.open" class="sandbox-dialog" append-to-body :title="sandbox.job ? ('沙盒发布 · 任务 #' + sandbox.job.id) : '沙盒发布'" width="680px" :close-on-click-modal="false">
   <div v-if="sandbox.variant" class="mb10">
     <div class="muted">内容版本</div>
     <b>#{{ sandbox.variant.id }} · {{ platformName(sandbox.variant.platform) }} · r{{ sandbox.variant.revision }}</b>

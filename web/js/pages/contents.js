@@ -1402,7 +1402,7 @@ export default {
   </template>
 </el-dialog>
 
-<el-dialog v-model="publish.open" title="沙盒发布" width="600px">
+<el-dialog v-model="publish.open" title="沙盒发布" width="600px" append-to-body>
   <div v-if="publish.variant" class="mb10">
     <div class="muted">内容版本</div>
     <b>#{{ publish.variant.id }} · {{ platformName(publish.variant.platform) }} · r{{ publish.variant.revision }}</b>
