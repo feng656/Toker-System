@@ -57,8 +57,8 @@ body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:
 .topbar-right{display:flex;align-items:center;gap:14px;font-size:13px}
 .topbar-mode{color:#a9b6c6;font-size:12px}
 .topbar-user{color:#e6ecf3}
-.layout{display:flex;min-height:calc(100vh - 56px)}
-.menu{width:186px;background:#fff;padding:10px 0;border-right:1px solid #e4e7ed;flex-shrink:0}
+.layout{display:flex;height:calc(100vh - 56px)}
+.menu{width:186px;background:#fff;padding:10px 0;border-right:1px solid #e4e7ed;flex-shrink:0;overflow-y:auto}
 .menu-item{display:flex;align-items:center;gap:8px;padding:11px 18px;cursor:pointer;color:#606266;font-size:14px;border-right:3px solid transparent}
 .menu-item:hover{background:#f6f8fa}
 .menu-item.on{color:#409eff;border-right-color:#409eff;background:#ecf5ff}
@@ -152,6 +152,11 @@ body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:
 .wk-wrap{display:flex;gap:18px;align-items:flex-start}
 .wk-pool{flex:1;min-width:0}
 .wk-channels{width:520px;flex-shrink:0}
+/* 左栏内容池很长时，右侧投放区（tab + composer）跟随滚动固定在视口内，
+   避免滚到列表下方后拖不到投放框；窄屏堆叠布局不启用。 */
+@media(min-width:861px){
+  .wk-channels{position:sticky;top:8px;max-height:calc(100vh - 56px - 20px);overflow-y:auto;padding-right:4px}
+}
 .wk-cover .muted{margin-left:auto}
 .wk-card{cursor:grab;border-left:3px solid #dcdfe6}
 .wk-card:active{cursor:grabbing}
