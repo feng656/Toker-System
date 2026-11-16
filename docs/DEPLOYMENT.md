@@ -62,7 +62,7 @@ APP_ENV=development
 DEMO_MODE=true
 ```
 
-再运行 `python -m scripts.seed`。账号 `admin`（管理员）、`yunying`（运营）、`sales01`/`sales02`（销售），演示密码统一为 `Demo-Toker-2026!`。生成结果及AI日志明确标记演示，不能当成真实外部模型验收。生产禁止 `DEMO_MODE=true`，生产管理员由 `BOOTSTRAP_ADMIN_PASSWORD`创建，其他账号由管理员创建。
+再运行 `python -m scripts.seed`。账号 `admin`（管理员）、`yunying`（运营）、`sales01`/`sales02`（销售），演示密码由部署时设置的 `DEMO_SEED_PASSWORD` 环境变量提供（至少10位，不写入仓库）。生成结果及AI日志明确标记演示，不能当成真实外部模型验收。生产禁止 `DEMO_MODE=true`，生产管理员由 `BOOTSTRAP_ADMIN_PASSWORD`创建，其他账号由管理员创建。
 
 种子包含3条非真实业务素材、甲方线/渠道线选题、禁用/广告法/必需口径规则；重复运行不重复创建。真实公司资质、库存、业绩等事实由业务负责人确认后替换。
 
