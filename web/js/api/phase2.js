@@ -41,9 +41,11 @@ export const phase2Api = {
   wsOverview: () => http.get('/workspace/overview'),
   publishJob: (body) => http.post('/workspace/publish-jobs', body),
   publishJobGet: (jid) => http.get(`/workspace/publish-jobs/${jid}`),
-  publishJobRun: (jid) => http.post(`/workspace/publish-jobs/${jid}/run`),
-  publishJobConfirm: (jid) => http.post(`/workspace/publish-jobs/${jid}/confirm`),
+  publishJobRun: (jid) => http.post(`/workspace/publish-jobs/${jid}/run`, undefined, { timeoutMs: 260000 }),
+  publishJobConfirm: (jid) => http.post(`/workspace/publish-jobs/${jid}/confirm`, undefined, { timeoutMs: 150000 }),
+  publishJobRetry: (jid) => http.post(`/workspace/publish-jobs/${jid}/retry`, undefined, { timeoutMs: 260000 }),
   publishJobCancel: (jid) => http.post(`/workspace/publish-jobs/${jid}/cancel`),
+  publishJobStepShot: (jid, index) => http.get(`/workspace/publish-jobs/${jid}/steps/${index}/screenshot`),
 
   /* ---- R7 授权评论任务 ---- */
   automationStatus: () => http.get('/automation/status'),

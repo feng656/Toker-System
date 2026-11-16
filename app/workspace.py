@@ -4,6 +4,7 @@
 import base64
 import hashlib
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -13,6 +14,8 @@ from . import config, storage
 from .db import utcnow
 from .models import Platform, WorkspaceAccount, WorkspaceJob, ContentVariant, AssetUsage, MediaAsset, AutomationEvent
 from .tasks import lock
+
+LOG = logging.getLogger(__name__)
 
 
 def cipher():
@@ -208,7 +211,18 @@ def apply_login(account, data):
         if not isinstance(data.get('session'), dict) or not data['session']:
             raise HTTPException(502, '登录响应缺少真实会话')
         expires_at = expiry(data.get('expires_at'))
-        ciphertext = encrypt(data['session'])
+        session = dict(data['session'])
+        # 适配器旧版本/部分刷新响应只回 handle；若本地还存着导入的 Cookie，
+        # 不能因为一次刷新就把可恢复的会话降级成不可恢复的句柄。
+        if not session.get('cookies') and account.session_ciphertext:
+            try:
+                previous = decrypt(account.session_ciphertext)
+            except HTTPException:
+                previous = {}
+            if isinstance(previous, dict) and previous.get('cookies'):
+                session['cookies'] = previous['cookies']
+                session['source'] = previous.get('source') or 'cookie_import'
+        ciphertext = encrypt(session)
         account.session_expires_at, account.session_ciphertext = expires_at, ciphertext
         account.status, account.error = 'connected', ''
         account.nickname = str(data.get('nickname', ''))[:100]
@@ -409,7 +423,23 @@ def run_publish(db, job, actor_id, confirm=False, retry=False):
     except Exception as exc:
         # confirm超时可能已发布：保留待确认及相同幂等键，不能重建任务再盲发。
         job.status = 'awaiting_confirmation' if confirm else 'failed'
-        job.error = type(exc).__name__ + ': 发布适配失败，核对远端状态后用同任务重试'
-        event(db, 'publish', job.id, 'failed', actor_id)
+        # 把适配器给出的可读原因带给运营（例如「账号会话不在线，请重新登录」），
+        # 否则前端只能看到笼统的失败类型，无法判断该重登还是该重试。
+        if isinstance(exc, HTTPException):
+            reason = str(exc.detail or '').strip()
+        elif isinstance(exc, ValueError):
+            reason = str(exc).strip()
+        else:
+            reason = ''
+        LOG.exception('publish job %s failed (confirm=%s)', job.id, confirm)
+        job.error = (
+            f'{type(exc).__name__}: {reason}' if reason
+            else f'{type(exc).__name__}: 发布适配失败，核对远端状态后用同任务重试'
+        )[:300]
+        # 适配器明确判定会话失效时同步账号状态，避免前端继续显示「已连接」并反复重试。
+        if isinstance(exc, HTTPException) and '会话' in reason and ('登录' in reason or '失效' in reason):
+            account.status, account.error = 'expired', reason[:200]
+            event(db, 'account', account.id, 'publish_session_expired', actor_id)
+        event(db, 'publish', job.id, 'failed', actor_id, {'reason': job.error})
     db.commit()
     return public_job(job)

@@ -122,7 +122,6 @@ export default {
     const wsAccounts = ref([]);
     const wsLoading = ref(false);
     const wsError = ref('');
-    const jobHighlight = ref(0);
     const jobStatusName = (s) => ({ queued: '排队中', running: '执行中', awaiting_confirmation: '待人工确认', succeeded: '已发布', failed: '失败', cancelled: '已取消' }[s] || s);
     const jobStatusTag = (s) => ({ queued: 'info', running: 'primary', awaiting_confirmation: 'warning', succeeded: 'success', failed: 'danger', cancelled: 'info' }[s] || 'info');
     const accountStatusName = (s) => ({ connected: '已连接', awaiting_scan: '待扫码', expired: '登录已过期', disconnected: '未登录' }[s] || s);
@@ -141,29 +140,39 @@ export default {
       }
     }
 
-    /** 创建任务后把视线带到「沙盒发布任务」卡片，并短暂高亮新任务 */
-    function scrollToJobs(jobId = 0) {
-      const el = document.getElementById('ws-jobs-card');
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      if (jobId) {
-        jobHighlight.value = jobId;
-        window.setTimeout(() => { if (jobHighlight.value === jobId) jobHighlight.value = 0; }, 4000);
+    /** 把任务状态同步进弹窗，并异步取回每一步的截图（后端返回 data URI，避免混合内容拦截）。 */
+    function setSandboxJob(job) {
+      sandbox.job = job || null;
+      sandbox.error = job && job.status === 'failed' ? (job.error || '沙盒执行失败') : '';
+      sandbox.shots = [];
+      if (job) loadSandboxShots(job);
+    }
+
+    async function loadSandboxShots(job) {
+      const steps = (job && job.steps) || [];
+      const shots = [];
+      sandbox.shots = shots;
+      for (let i = 0; i < steps.length; i += 1) {
+        if (!steps[i] || !steps[i].screenshot_ref) { shots.push(''); continue; }
+        try {
+          const data = await phase2Api.publishJobStepShot(job.id, i);
+          shots.push((data && data.url) || '');
+        } catch (e) {
+          shots.push('');
+        }
+        sandbox.shots = shots.slice();
       }
     }
 
-    async function jobRun(j) {
-      try { await phase2Api.publishJobRun(j.id); notify.ok('任务已提交沙盒执行'); await loadWorkspace(); }
-      catch (e) { notify.err(errorMessage(e)); }
-    }
-
-    async function jobConfirm(j) {
-      try { await phase2Api.publishJobConfirm(j.id); notify.ok('已确认，继续发布流程'); await loadWorkspace(); }
-      catch (e) { notify.err(errorMessage(e)); }
-    }
-
-    async function jobCancel(j) {
-      try { await phase2Api.publishJobCancel(j.id); notify.info('任务已取消'); await loadWorkspace(); }
-      catch (e) { notify.err(errorMessage(e)); }
+    /** 任务列表只是历史记录；点击「查看」在原位打开同一个沙盒弹窗。 */
+    async function openJobRecord(j) {
+      sandbox.open = true;
+      sandbox.loading = false;
+      sandbox.busy = false;
+      sandbox.error = '';
+      sandbox.accountId = j.account_id;
+      sandbox.variant = items.value.find((x) => x.id === j.variant_id) || null;
+      setSandboxJob(j);
     }
 
     /* ---------------- 平台登录（浏览器代理，沿用原工作台能力） ---------------- */
@@ -288,7 +297,8 @@ export default {
 
     /* ---------------- 沙盒发布（工作台 composer，复用二期发布任务） ---------------- */
     const sandbox = reactive({
-      open: false, loading: false, accounts: [], accountId: null, busy: false, error: '', job: null, variant: null,
+      open: false, loading: false, accounts: [], accountId: null, busy: false, error: '',
+      job: null, variant: null, shots: [],
     });
 
     /** 当前 composer 的来源版本；列表刷新后优先用最新数据，找不到时回退投放时的快照 */
@@ -306,6 +316,9 @@ export default {
     });
 
     const sandboxHasConnected = computed(() => sandboxAccounts.value.some((a) => a.status === 'connected'));
+
+    const sandboxSessionError = computed(() =>
+      /登录|会话/.test((sandbox.job && sandbox.job.error) || ''));
 
     const sandboxCanSubmit = computed(() => {
       const a = (sandbox.accounts || []).find((x) => x.id === sandbox.accountId);
@@ -344,6 +357,7 @@ export default {
       sandbox.loading = true;
       sandbox.error = '';
       sandbox.job = null;
+      sandbox.shots = [];
       sandbox.accountId = null;
       try {
         // 打开弹窗时重新取账号，避免刚扫码连接后页面状态仍是旧的
@@ -367,6 +381,7 @@ export default {
       });
     }
 
+    /** 在弹窗内直接创建并进入沙盒，不再把视线带到页面下方的任务列表。 */
     async function submitSandboxPublish() {
       const v = sandbox.variant || curVariant.value;
       const account = (sandbox.accounts || []).find((a) => a.id === sandbox.accountId);
@@ -384,17 +399,82 @@ export default {
           account_id: account.id,
           variant_id: v.id,
         });
-        sandbox.job = job;
-        sandbox.open = false;
-        notify.ok(`沙盒发布任务 #${job.id} 已创建，已定位到下方「沙盒发布任务」`);
-        await loadWorkspace();
-        await nextTick();
-        scrollToJobs(job.id);
+        setSandboxJob(job);
+        if (job.status === 'queued') {
+          await runSandboxJob(false);
+        } else {
+          await loadWorkspace();
+        }
       } catch (e) {
         sandbox.error = errorMessage(e);
         notify.err(sandbox.error);
       } finally {
         sandbox.busy = false;
+      }
+    }
+
+    /** 执行/重试共用；请求完成前弹窗保持打开并显示「沙盒执行中」。 */
+    async function runSandboxJob(retry) {
+      const job = sandbox.job;
+      if (!job) return;
+      sandbox.busy = true;
+      sandbox.error = '';
+      try {
+        const result = retry
+          ? await phase2Api.publishJobRetry(job.id)
+          : await phase2Api.publishJobRun(job.id);
+        setSandboxJob(result);
+        await loadWorkspace();
+        if (result.status === 'awaiting_confirmation') {
+          notify.ok('沙盒预览已就绪，请核对步骤截图后确认发布');
+        } else if (result.status === 'succeeded') {
+          notify.ok('发布完成，已记录真实作品链接');
+          await loadAll();
+        } else if (result.status === 'failed') {
+          notify.err(result.error || '沙盒执行失败');
+        }
+      } catch (e) {
+        sandbox.error = errorMessage(e);
+        notify.err(sandbox.error);
+      } finally {
+        sandbox.busy = false;
+      }
+    }
+
+    async function confirmSandboxJob() {
+      const job = sandbox.job;
+      if (!job) return;
+      sandbox.busy = true;
+      sandbox.error = '';
+      try {
+        const result = await phase2Api.publishJobConfirm(job.id);
+        setSandboxJob(result);
+        await loadWorkspace();
+        if (result.status === 'succeeded') {
+          notify.ok('发布完成，已记录真实作品链接');
+          await loadAll();
+        } else if (result.status === 'failed') {
+          notify.err(result.error || '发布确认失败，请核对平台作品状态');
+        }
+      } catch (e) {
+        sandbox.error = errorMessage(e);
+        notify.err(sandbox.error);
+      } finally {
+        sandbox.busy = false;
+      }
+    }
+
+    async function cancelSandboxJob() {
+      const job = sandbox.job;
+      if (!job) return;
+      try {
+        const result = await phase2Api.publishJobCancel(job.id);
+        setSandboxJob(result);
+        notify.info('任务已取消');
+        await loadWorkspace();
+      } catch (e) {
+        sandbox.error = errorMessage(e);
+        notify.err(sandbox.error);
       }
     }
 
@@ -524,10 +604,11 @@ export default {
       onDragStart, onDragEnd, onDragOver, onDragOut, onDrop, onPick,
       switchChannel, copyComposer, openBackend, markPublished, useTextOnly, gotoMaterials,
       channelName, platformAccounts, openAddPlatform,
-      wsJobs, wsAccounts, wsLoading, wsError, loadWorkspace, jobRun, jobConfirm, jobCancel,
-      jobStatusName, jobStatusTag, jobHighlight, accountStatusName,
-      sandbox, sandboxAccounts, sandboxHasConnected, sandboxCanSubmit, sandboxBlock,
+      wsJobs, wsAccounts, wsLoading, wsError, loadWorkspace, openJobRecord,
+      jobStatusName, jobStatusTag, accountStatusName,
+      sandbox, sandboxAccounts, sandboxHasConnected, sandboxCanSubmit, sandboxBlock, sandboxSessionError,
       openSandboxPublish, goConnectAccount, submitSandboxPublish,
+      runSandboxJob, confirmSandboxJob, cancelSandboxJob,
       isAdmin,
     };
   },
@@ -701,7 +782,7 @@ export default {
               <span><el-button size="small" type="primary" plain :disabled="!!sandboxBlock" @click="openSandboxPublish">沙盒发布</el-button></span>
             </el-tooltip>
           </div>
-          <div class="gap-note">沙盒发布需先选已连接账号；任务创建后在下方「沙盒发布任务」执行、核对截图，再人工确认。标记已发需回填链接：未回填链接不计入「已发布」（硬门槛，不允许绕过）。</div>
+          <div class="gap-note">沙盒发布需先选已连接账号；点「沙盒发布」后在弹窗内直接进入沙盒，核对截图后再人工确认。下方「沙盒发布记录」只作历史留痕。标记已发需回填链接：未回填链接不计入「已发布」（硬门槛，不允许绕过）。</div>
         </div>
       </div>
 
@@ -709,23 +790,20 @@ export default {
 
       <div class="card" id="ws-jobs-card" v-if="wsJobs.length || wsError">
         <div class="row" style="justify-content:space-between">
-          <b>沙盒发布任务</b>
-          <el-button size="small" :loading="wsLoading" @click="loadWorkspace">刷新任务</el-button>
+          <b>沙盒发布记录</b>
+          <el-button size="small" :loading="wsLoading" @click="loadWorkspace">刷新记录</el-button>
         </div>
-        <div class="muted mt6">创建任务 → 执行上传填稿并截图 → 人工核对 → 确认继续 → 发布存证</div>
+        <div class="muted mt6">这里只保留历史任务和截图入口；发布操作统一在上方 composer 的「沙盒发布」弹窗内完成。</div>
         <div v-if="wsError" class="alert-strip warn mt10" role="alert">{{ wsError }}</div>
         <div v-for="j in wsJobs.slice(0, 8)" :key="j.id" class="row mt10"
-             :style="jobHighlight === j.id ? 'background:#f0f9eb;border-radius:6px' : ''"
              style="justify-content:space-between;border-top:1px dashed #ebeef5;padding-top:8px">
-          <div class="row">
+          <div class="row" style="min-width:0">
             <el-tag size="small" :type="jobStatusTag(j.status)">{{ jobStatusName(j.status) }}</el-tag>
             <span class="muted">任务 #{{ j.id }} · 内容版本 {{ j.variant_id }}</span>
             <span v-if="j.error" class="muted tiny">（{{ j.error }}）</span>
           </div>
           <div class="row">
-            <el-button v-if="j.status === 'queued'" size="small" text type="primary" @click="jobRun(j)">执行</el-button>
-            <el-button v-if="j.status === 'awaiting_confirmation'" size="small" text type="success" @click="jobConfirm(j)">确认继续</el-button>
-            <el-button v-if="['queued','failed','awaiting_confirmation'].indexOf(j.status) >= 0" size="small" text type="danger" @click="jobCancel(j)">取消</el-button>
+            <el-button size="small" text type="primary" @click="openJobRecord(j)">查看</el-button>
           </div>
         </div>
       </div>
@@ -754,7 +832,7 @@ export default {
 
 </template>
 
-<el-dialog v-model="sandbox.open" title="沙盒发布" width="600px" :close-on-click-modal="false">
+<el-dialog v-model="sandbox.open" class="sandbox-dialog" :title="sandbox.job ? ('沙盒发布 · 任务 #' + sandbox.job.id) : '沙盒发布'" width="680px" :close-on-click-modal="false">
   <div v-if="sandbox.variant" class="mb10">
     <div class="muted">内容版本</div>
     <b>#{{ sandbox.variant.id }} · {{ platformName(sandbox.variant.platform) }} · r{{ sandbox.variant.revision }}</b>
@@ -762,33 +840,89 @@ export default {
   </div>
   <div v-if="sandbox.error" class="alert-strip error mt10">{{ sandbox.error }}</div>
   <div v-if="sandbox.loading" class="card"><el-skeleton :rows="2" animated /></div>
-  <div v-else-if="!sandboxAccounts.length" class="alert-strip warn">
-    当前平台还没有工作空间账号。请先在下方「平台账号」添加并扫码连接{{ curChannel.name }}账号。
-    <div class="mt10"><el-button size="small" @click="goConnectAccount">去添加 / 连接账号</el-button></div>
-  </div>
-  <div v-else-if="!sandboxHasConnected" class="alert-strip warn">
-    当前平台的账号均未连接（{{ sandboxAccounts.map((a) => a.label + '：' + accountStatusName(a.status)).join('；') }}）。
-    请先完成扫码登录，再发起沙盒发布。
-    <div class="mt10"><el-button size="small" @click="goConnectAccount">去平台账号扫码连接</el-button></div>
-  </div>
-  <template v-else>
-    <div class="muted mt6">选择已连接的同平台账号（任务提交到沙盒适配器，步骤与截图全程留痕）</div>
-    <el-select v-model="sandbox.accountId" style="width:100%" placeholder="选择工作空间账号">
-      <el-option v-for="a in sandboxAccounts" :key="a.id"
-                 :label="a.label + '（' + accountStatusName(a.status) + '）'"
-                 :value="a.id" :disabled="a.status !== 'connected'"></el-option>
-    </el-select>
-    <div class="gap-note mt10">
-      幂等键：variant_{{ sandbox.variant.id }}_{{ sandbox.accountId || '账号' }}；重复提交不会重复建任务。
-      任务使用该内容版本已审核的文案，composer 里的临时修改不会同步；需改稿请先在内容管理保存新版本。
-      创建后到「沙盒发布任务」点「执行」只做上传和填稿并截图，确认继续前不会真正发布。
+
+  <template v-else-if="!sandbox.job">
+    <div v-if="!sandboxAccounts.length" class="alert-strip warn">
+      当前平台还没有工作空间账号。请先在下方「平台账号」添加并扫码连接{{ curChannel.name }}账号。
+      <div class="mt10"><el-button size="small" @click="goConnectAccount">去添加 / 连接账号</el-button></div>
     </div>
+    <div v-else-if="!sandboxHasConnected" class="alert-strip warn">
+      当前平台的账号均未连接（{{ sandboxAccounts.map((a) => a.label + '：' + accountStatusName(a.status)).join('；') }}）。
+      请先完成扫码登录，再发起沙盒发布。
+      <div class="mt10"><el-button size="small" @click="goConnectAccount">去平台账号扫码连接</el-button></div>
+    </div>
+    <template v-else>
+      <div class="muted mt6">选择已连接的同平台账号；确认后直接在弹窗内进入沙盒，上传视频、填稿并截图。</div>
+      <el-select v-model="sandbox.accountId" style="width:100%" placeholder="选择工作空间账号">
+        <el-option v-for="a in sandboxAccounts" :key="a.id"
+                   :label="a.label + '（' + accountStatusName(a.status) + '）'"
+                   :value="a.id" :disabled="a.status !== 'connected'"></el-option>
+      </el-select>
+      <div class="gap-note mt10">
+        幂等键：variant_{{ sandbox.variant.id }}_{{ sandbox.accountId || '账号' }}；重复提交不会重复建任务。
+        任务使用该内容版本已审核的文案，composer 里的临时修改不会同步；需改稿请先在内容管理保存新版本。
+        沙盒只做上传和填稿并截图，确认继续前不会真正发布；下方「沙盒发布记录」仅作历史留痕。
+      </div>
+    </template>
   </template>
+
+  <template v-else>
+    <div class="row" style="justify-content:space-between">
+      <div class="row">
+        <el-tag size="small" :type="jobStatusTag(sandbox.job.status)">{{ jobStatusName(sandbox.job.status) }}</el-tag>
+        <span class="muted">内容版本 #{{ sandbox.job.variant_id }}</span>
+      </div>
+      <span v-if="sandbox.job.attempts" class="muted tiny">第 {{ sandbox.job.attempts }} 次执行</span>
+    </div>
+    <div v-if="sandbox.busy" class="alert-strip info mt10">
+      沙盒浏览器正在打开平台发布页、上传视频并填写文案，通常需要 30–120 秒；请保持弹窗打开。
+    </div>
+    <div v-else-if="sandbox.job.status === 'queued'" class="alert-strip info mt10">
+      任务已创建，尚未执行；点下方「开始执行」进入沙盒。
+    </div>
+    <div v-else-if="sandbox.job.status === 'failed'" class="alert-strip error mt10">
+      本次执行失败：{{ sandbox.job.error || '未知原因' }}。按提示修正后可直接在当前弹窗重试。
+      <div v-if="sandboxSessionError" class="mt10">
+        <el-button size="small" @click="goConnectAccount">去重新登录账号</el-button>
+      </div>
+    </div>
+    <div v-else-if="sandbox.job.status === 'awaiting_confirmation'" class="alert-strip warn mt10">
+      视频和文案已填好，尚未点击发布。请逐张核对下面截图，确认无误后点「确认继续发布」。
+    </div>
+    <div v-else-if="sandbox.job.status === 'succeeded'" class="alert-strip ok mt10">
+      已发布并记录真实作品链接；请到内容管理核对发布链接。
+    </div>
+
+    <div v-if="sandbox.job.steps && sandbox.job.steps.length" class="mt14">
+      <div class="muted">执行步骤与截图</div>
+      <div v-for="(s, idx) in sandbox.job.steps" :key="idx" class="card" style="margin:8px 0;padding:10px">
+        <div class="row" style="justify-content:space-between">
+          <b class="tiny">{{ idx + 1 }}. {{ s.name || '步骤' }}</b>
+          <el-tag size="small" type="success">{{ s.status || 'ok' }}</el-tag>
+        </div>
+        <img v-if="sandbox.shots[idx]" :src="sandbox.shots[idx]" alt="沙盒步骤截图"
+             style="display:block;width:100%;max-height:360px;object-fit:contain;margin-top:8px;border:1px solid #ebeef5;border-radius:6px" />
+        <div v-else class="muted tiny mt6">截图读取中或该步骤无截图</div>
+      </div>
+    </div>
+    <div v-else-if="!sandbox.busy" class="muted mt10">本次没有留下步骤截图。</div>
+  </template>
+
   <template #footer>
     <el-button @click="sandbox.open = false">关闭</el-button>
-    <el-button v-if="!sandbox.loading && sandboxHasConnected" type="primary"
+    <template v-if="sandbox.job">
+      <el-button v-if="sandbox.job.status === 'queued'" type="primary"
+                 :loading="sandbox.busy" :disabled="sandbox.busy" @click="runSandboxJob(false)">开始执行</el-button>
+      <el-button v-if="sandbox.job.status === 'failed'" type="primary"
+                 :loading="sandbox.busy" :disabled="sandbox.busy" @click="runSandboxJob(true)">重试</el-button>
+      <el-button v-if="sandbox.job.status === 'awaiting_confirmation'" type="success"
+                 :loading="sandbox.busy" :disabled="sandbox.busy" @click="confirmSandboxJob">确认继续发布</el-button>
+      <el-button v-if="['queued','failed','awaiting_confirmation'].indexOf(sandbox.job.status) >= 0"
+                 type="danger" plain :disabled="sandbox.busy" @click="cancelSandboxJob">取消任务</el-button>
+    </template>
+    <el-button v-else-if="!sandbox.loading && sandboxHasConnected" type="primary"
                :loading="sandbox.busy" :disabled="!sandboxCanSubmit || sandbox.busy"
-               @click="submitSandboxPublish">创建发布任务</el-button>
+               @click="submitSandboxPublish">创建并进入沙盒</el-button>
   </template>
 </el-dialog>
 `,

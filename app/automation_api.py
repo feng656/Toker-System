@@ -129,7 +129,13 @@ def get_publish(jid:int,db:Session=Depends(get_db),_=Depends(operate)):
 def step_screenshot(jid:int,index:int,db:Session=Depends(get_db),_=Depends(operate)):
     job=row(db,WorkspaceJob,jid)
     if not 0<=index<len(job.steps) or not job.steps[index].get('screenshot_ref'):raise HTTPException(404,'该步骤无截图')
-    return {'url':storage.signed_url(job.steps[index]['screenshot_ref']),'expires_seconds':600}
+    # 页面是 HTTPS，而私有 MinIO 签名地址是 HTTP，<img> 直接加载会被浏览器按混合内容拦截。
+    # 与扫码二维码一致，返回短响应内的 data URI；截图只在当前查看请求中传输。
+    try:
+        png=storage.get(job.steps[index]['screenshot_ref'])
+    except Exception:
+        raise HTTPException(503,'截图读取失败，请检查私有对象存储')
+    return {'url':'data:image/png;base64,'+base64.b64encode(png).decode(),'expires_seconds':600}
 
 
 @api.post('/workspace/publish-jobs/{jid}/run', tags=['沙盒发布'])

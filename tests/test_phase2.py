@@ -212,6 +212,35 @@ def test_publish_preparation_confirmation_and_idempotence(client,headers,connect
     assert len(calls)==2 and len(fake_storage)==2
 
 
+def test_publish_failure_exposes_adapter_reason(client,headers,connected,monkeypatch):
+    from fastapi import HTTPException
+    v=generated(client,headers)[0];post(client,headers,f'/variants/{v["id"]}/approve')
+    j=post(client,headers,'/workspace/publish-jobs',{'request_key':'publish-reason','account_id':connected,'variant_id':v['id']},201)
+    def fail(*args,**kwargs):
+        raise HTTPException(502,'适配服务：账号会话不在线，请重新登录')
+    monkeypatch.setattr(workspace,'request',fail)
+    result=post(client,headers,f'/workspace/publish-jobs/{j["id"]}/run')
+    assert result['status']=='failed'
+    assert '账号会话不在线' in result['error']
+
+
+def test_refresh_preserves_imported_cookies(client,headers,connected,monkeypatch):
+    expiry=(datetime.now(timezone.utc)+timedelta(hours=2)).isoformat()
+    cookies=[{'name':'sessionid','value':'secret','domain':'.douyin.com','path':'/'}]
+    with SessionLocal() as db:
+        a=db.get(WorkspaceAccount,connected)
+        a.session_ciphertext=workspace.encrypt({'handle':'old-handle','cookies':cookies,'source':'cookie_import'})
+        db.commit()
+    monkeypatch.setattr(workspace,'request',lambda *a,**k:{'ok':True,'status':'connected',
+        'session':{'handle':'new-handle'},'expires_at':expiry})
+    result=post(client,headers,f'/workspace/accounts/{connected}/refresh')
+    assert result['status']=='connected'
+    with SessionLocal() as db:
+        payload=workspace.decrypt(db.get(WorkspaceAccount,connected).session_ciphertext)
+        assert payload['handle']=='new-handle'
+        assert payload['cookies']==cookies and payload['source']=='cookie_import'
+
+
 def test_publish_revalidates_draft_after_preview(client,headers,connected,image_bytes,fake_storage,monkeypatch):
     v=generated(client,headers)[0];post(client,headers,f'/variants/{v["id"]}/approve')
     j=post(client,headers,'/workspace/publish-jobs',{'request_key':'publish-change','account_id':connected,'variant_id':v['id']},201)

@@ -23,6 +23,10 @@ body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:
 .pa-dialog.el-dialog{margin-top:4vh!important;max-height:92vh;display:flex;flex-direction:column}
 .pa-dialog .el-dialog__body{overflow-y:auto;min-height:0}
 .pa-dialog .el-dialog__header,.pa-dialog .el-dialog__footer{flex-shrink:0}
+/* 沙盒步骤截图可能多张：弹窗主体内部滚动，确认/取消按钮始终留在视口内。 */
+.sandbox-dialog.el-dialog{margin-top:4vh!important;max-height:92vh;display:flex;flex-direction:column}
+.sandbox-dialog .el-dialog__body{overflow-y:auto;min-height:0}
+.sandbox-dialog .el-dialog__header,.sandbox-dialog .el-dialog__footer{flex-shrink:0}
 .pa-qr-content{text-align:center;overflow-wrap:anywhere}
 .pa-qr-image{display:block;width:240px;height:240px;max-width:100%;object-fit:contain;margin:18px auto;border:1px solid var(--el-border-color-lighter);border-radius:var(--el-border-radius-base)}
 .pa-qr-content .alert-strip{text-align:left}
