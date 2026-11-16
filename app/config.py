@@ -23,7 +23,32 @@ WECOM_WEBHOOK = os.getenv('WECOM_WEBHOOK', '')
 CRM_WEBHOOK = os.getenv('CRM_WEBHOOK', '')
 CRM_TOKEN = os.getenv('CRM_TOKEN', '')
 LLM_PROVIDERS = json.loads(os.getenv('LLM_PROVIDERS', '[]'))
-LLM_TIMEOUT = float(os.getenv('LLM_TIMEOUT', '30'))
+# 平台网关一次多平台长文生成实测 60s 左右，推理型模型更慢；默认给足 180s。
+LLM_TIMEOUT = float(os.getenv('LLM_TIMEOUT', '180'))
+# 平台模型网关（OpenAI 兼容）。配置 PIOS_MODEL_KEY 后，未显式给 LLM_PROVIDERS 时自动接入。
+PIOS_GATEWAY_URL = os.getenv('PIOS_GATEWAY_URL', 'https://devhub.supiedt.com/api/v1/model-gateway/v1')
+PIOS_MODEL_KEY = os.getenv('PIOS_MODEL_KEY', '')
+# 文案/评审主模型选平台目录中当前可用、中文长文案最稳的旗舰；备用为同级中文旗舰。
+# 模型目录会轮换，改名或下线时用 scripts/check_ai_models.py 按目录重新核对。
+LLM_MODEL = os.getenv('LLM_MODEL', 'moonshotai/kimi-k3.1-pro')
+LLM_FALLBACK_MODEL = os.getenv('LLM_FALLBACK_MODEL', 'qwen/qwen3.8-2.4t-a95b')
+# 平台视频生成（/agent-api/video/*）。PIOS_API_URL 形如 https://host/api/v1。
+PIOS_API_URL = os.getenv('PIOS_API_URL', '').rstrip('/')
+PIOS_TOKEN = os.getenv('PIOS_TOKEN', '')
+VIDEO_PROVIDER = os.getenv('VIDEO_PROVIDER', 'pios')
+# 平台视频目录里 MiniMax-H3 是当前综合画质最好的通用模型（另有同款参考图变体）；
+# 该模型目录只提供 768P/2K，成片默认用最高 2K，竖屏 9:16 适配短视频平台。
+VIDEO_MODEL = os.getenv('VIDEO_MODEL', 'MiniMax-H3')
+VIDEO_RESOLUTION = os.getenv('VIDEO_RESOLUTION', '2K')
+# 平台上游偶发不可用时自动降级；备用模型目录见 scripts/check_ai_models.py。
+# 2K 是 MiniMax-H3 独有档位；豆包 mini 的 t2v 实测只接受 720P（1080P 会 400）。
+VIDEO_FALLBACK_MODEL = os.getenv('VIDEO_FALLBACK_MODEL', 'doubao-seedance-2-0-mini-260615')
+VIDEO_FALLBACK_RESOLUTION = os.getenv('VIDEO_FALLBACK_RESOLUTION', '720P')
+VIDEO_ASPECT_RATIO = os.getenv('VIDEO_ASPECT_RATIO', '9:16')
+VIDEO_DURATION_SEC = int(os.getenv('VIDEO_DURATION_SEC', '5'))
+VIDEO_POLL_INTERVAL = float(os.getenv('VIDEO_POLL_INTERVAL', '10'))
+VIDEO_TIMEOUT = float(os.getenv('VIDEO_TIMEOUT', '900'))
+VIDEO_WATERMARK = os.getenv('VIDEO_WATERMARK', 'true').lower() == 'true'
 OCR_TIMEOUT = float(os.getenv('OCR_TIMEOUT', '30'))
 OCR_BACKEND = os.getenv('OCR_BACKEND', 'tesseract')
 OCR_ENDPOINT = os.getenv('OCR_ENDPOINT', '')
@@ -36,6 +61,11 @@ BROWSER_ENABLED = os.getenv('BROWSER_ENABLED', 'false').lower() == 'true'
 BROWSER_ADAPTER_URL = os.getenv('BROWSER_ADAPTER_URL', '')
 BROWSER_ADAPTER_TOKEN = os.getenv('BROWSER_ADAPTER_TOKEN', '')
 BROWSER_LOGIN_PLATFORMS = [x.strip() for x in os.getenv('BROWSER_LOGIN_PLATFORMS', '').split(',') if x.strip()]
+LOGIN_ADAPTER_PORT = int(os.getenv('LOGIN_ADAPTER_PORT', '8400'))
+CHROMIUM_PATH = os.getenv('CHROMIUM_PATH', '/usr/bin/chromium')
+LOGIN_QR_TTL_SECONDS = int(os.getenv('LOGIN_QR_TTL_SECONDS', '75'))
+LOGIN_SESSION_TTL_HOURS = int(os.getenv('LOGIN_SESSION_TTL_HOURS', '168'))
+LOGIN_MAX_BROWSER_SESSIONS = int(os.getenv('LOGIN_MAX_BROWSER_SESSIONS', '4'))
 OFFICIAL_PUBLISH_ENABLED = os.getenv('OFFICIAL_PUBLISH_ENABLED', 'false').lower() == 'true'
 AUTO_REGISTER_MODE = os.getenv('AUTO_REGISTER_MODE', 'off')
 REGISTER_INVITE_CODE = os.getenv('REGISTER_INVITE_CODE', '')
@@ -47,10 +77,29 @@ LOGIN_MAX_INFLIGHT = int(os.getenv('LOGIN_MAX_INFLIGHT', '4'))
 SESSION_ENCRYPTION_KEY = os.getenv('SESSION_ENCRYPTION_KEY', '')
 ADAPTER_ALLOWED_HOSTS = [x.strip().lower() for x in os.getenv('ADAPTER_ALLOWED_HOSTS', '').split(',') if x.strip()]
 MEDIA_ALLOWED_HOSTS = [x.strip().lower() for x in os.getenv('MEDIA_ALLOWED_HOSTS', '').split(',') if x.strip()]
+MEDIA_MAX_BYTES = int(os.getenv('MEDIA_MAX_BYTES', str(200 * 1024 * 1024)))
+PUBLISH_DRAFT_TTL_SECONDS = int(os.getenv('PUBLISH_DRAFT_TTL_SECONDS', '1800'))
 PHASE2_WORKER_ENABLED = os.getenv('PHASE2_WORKER_ENABLED', 'false').lower() == 'true'
 AUTOMATION_ENABLED = os.getenv('AUTOMATION_ENABLED', 'false').lower() == 'true'
 AUTOMATION_INTERVAL_SECONDS = int(os.getenv('AUTOMATION_INTERVAL_SECONDS', '60'))
 AUTOMATION_DAILY_LIMIT = int(os.getenv('AUTOMATION_DAILY_LIMIT', '50'))
+
+
+def _platform_llm_providers():
+    """平台模型网关是 OpenAI 兼容接口，直接映射成 LLM_PROVIDERS 即可复用现有故障转移。"""
+    if not PIOS_MODEL_KEY:
+        return []
+    providers = [{'name': 'pios-gateway', 'base_url': PIOS_GATEWAY_URL,
+                  'model': LLM_MODEL, 'key': PIOS_MODEL_KEY}]
+    if LLM_FALLBACK_MODEL and LLM_FALLBACK_MODEL != LLM_MODEL:
+        providers.append({'name': 'pios-gateway-fallback', 'base_url': PIOS_GATEWAY_URL,
+                          'model': LLM_FALLBACK_MODEL, 'key': PIOS_MODEL_KEY})
+    return providers
+
+
+# 显式 LLM_PROVIDERS 优先；否则用平台网关（PIOS_MODEL_KEY）自动接入。
+if not LLM_PROVIDERS:
+    LLM_PROVIDERS = _platform_llm_providers()
 
 
 def path_setting(name, default):

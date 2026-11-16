@@ -1,3 +1,4 @@
+import base64
 from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
@@ -6,8 +7,9 @@ from .api import operate, admin, row, as_dict
 from .db import get_db, utcnow
 from .models import (Platform, WorkspaceAccount, WorkspaceJob, ContentVariant, CommentTask, CommentAction,
                      ReplyTemplate, DMPolicy, DMMessage, AIProvider, AutomationEvent)
-from .phase2_schemas import AccountIn, AccountLoginIn, LoginPlatformIn, PublishJobIn, CommentTaskIn, DiscoverIn, ReplyTemplateIn, DMPolicyIn, DMIn
-from . import workspace, engagement, storage
+from .phase2_schemas import (AccountIn, AccountLoginIn, LoginPlatformIn, PublishJobIn, CommentTaskIn,
+                             DiscoverIn, ReplyTemplateIn, DMPolicyIn, DMIn, SessionImportIn)
+from . import workspace, engagement, storage, config
 from .tasks import lock
 
 api = APIRouter()
@@ -76,14 +78,32 @@ def logout(aid:int,db:Session=Depends(get_db),actor=Depends(operate)):
     workspace.logout(db,row(db,WorkspaceAccount,aid),actor.id);return {'ok':True}
 
 
+@api.post('/workspace/accounts/{aid}/session-import', tags=['工作空间'])
+def session_import(aid:int,body:SessionImportIn,db:Session=Depends(get_db),actor=Depends(operate)):
+    """导入本机浏览器 Cookie；云端适配器校验登录态后才标记 connected。"""
+    return workspace.import_session(db,row(db,WorkspaceAccount,aid),body,actor.id)
+
+
+@api.post('/workspace/accounts/{aid}/publish-inspect', tags=['工作空间'])
+def publish_inspect(aid:int,db:Session=Depends(get_db),actor=Depends(operate)):
+    """只读检查发布页结构；返回平台页面截图与可填控件摘要。"""
+    return workspace.publish_inspect(db,row(db,WorkspaceAccount,aid),actor.id)
+
+
 @api.get('/workspace/accounts/{aid}/session', tags=['工作空间'])
 def session(aid:int,db:Session=Depends(get_db),_=Depends(operate)):
     a=row(db,WorkspaceAccount,aid);result=workspace.public_account(a)
     if result['qr_available']:
+        # 直接返回本地读取的短生命周期 data URI，避免 HTTPS 页面被 HTTP MinIO
+        # 签名地址按混合内容拦截；二维码本来就是要展示给当前登录运营的。
         try:
-            result['qr_url']=storage.signed_url(a.qr_object_ref)
+            png=storage.get(a.qr_object_ref)
+            result['qr_url']='data:image/png;base64,'+base64.b64encode(png).decode()
         except Exception:
-            raise HTTPException(503, '无法获取二维码图片地址，请检查私有对象存储配置')
+            try:
+                result['qr_url']=storage.signed_url(a.qr_object_ref)
+            except Exception:
+                raise HTTPException(503, '无法获取二维码图片，请检查私有对象存储配置')
     return result
 
 
@@ -109,7 +129,13 @@ def get_publish(jid:int,db:Session=Depends(get_db),_=Depends(operate)):
 def step_screenshot(jid:int,index:int,db:Session=Depends(get_db),_=Depends(operate)):
     job=row(db,WorkspaceJob,jid)
     if not 0<=index<len(job.steps) or not job.steps[index].get('screenshot_ref'):raise HTTPException(404,'该步骤无截图')
-    return {'url':storage.signed_url(job.steps[index]['screenshot_ref']),'expires_seconds':600}
+    # 页面是 HTTPS，而私有 MinIO 签名地址是 HTTP，<img> 直接加载会被浏览器按混合内容拦截。
+    # 与扫码二维码一致，返回短响应内的 data URI；截图只在当前查看请求中传输。
+    try:
+        png=storage.get(job.steps[index]['screenshot_ref'])
+    except Exception:
+        raise HTTPException(503,'截图读取失败，请检查私有对象存储')
+    return {'url':'data:image/png;base64,'+base64.b64encode(png).decode(),'expires_seconds':600}
 
 
 @api.post('/workspace/publish-jobs/{jid}/run', tags=['沙盒发布'])
@@ -273,6 +299,16 @@ def approve_dm(mid:int,db:Session=Depends(get_db),actor=Depends(operate)):
 @api.post('/dm/messages/{mid}/send', tags=['私信接管'])
 def send_dm(mid:int,db:Session=Depends(get_db),actor=Depends(operate)):
     return as_dict(engagement.send_dm(db,row(db,DMMessage,mid),actor.id))
+
+
+@api.get('/automation/status', tags=['自动化审计'])
+def automation_status(_=Depends(operate)):
+    # 前端在执行/发送前预检：关闭时给出可读提示，而不是等写操作返回 503。
+    return {'enabled': config.AUTOMATION_ENABLED,
+            'comment_send_enabled': config.AUTOMATION_ENABLED,
+            'dm_send_enabled': config.AUTOMATION_ENABLED,
+            'interval_seconds': config.AUTOMATION_INTERVAL_SECONDS,
+            'daily_limit': config.AUTOMATION_DAILY_LIMIT}
 
 
 @api.get('/automation/events', tags=['自动化审计'])

@@ -1,10 +1,17 @@
 """默认内存隔离测试；TEST_DATABASE_URL可切换专用Postgres测试schema。"""
 import os
+import secrets
 os.environ.setdefault('APP_ENV', 'test')
+os.environ.setdefault('DEMO_SEED_PASSWORD', secrets.token_urlsafe(18))
 os.environ.setdefault('DATABASE_URL', os.getenv('TEST_DATABASE_URL', 'sqlite:///:memory:'))
 os.environ.setdefault('JWT_SECRET', 'test-only-key-not-for-production-0123456789')
 os.environ.setdefault('DEMO_MODE', 'true')
 os.environ.setdefault('SCHEDULER_ENABLED', 'false')
+# 本机 .env 为线上部署打开了扫码适配；测试必须默认关闭，由需要的用例显式 monkeypatch。
+os.environ.setdefault('BROWSER_ENABLED', 'false')
+os.environ.setdefault('BROWSER_ADAPTER_URL', '')
+os.environ.setdefault('BROWSER_ADAPTER_TOKEN', '')
+os.environ.setdefault('ADAPTER_ALLOWED_HOSTS', '')
 
 from pathlib import Path
 import pytest
@@ -25,6 +32,9 @@ def db_reset(monkeypatch):
     monkeypatch.setattr(config, 'CRM_WEBHOOK', '')
     monkeypatch.setattr(config, 'WECOM_WEBHOOK', '')
     monkeypatch.setattr(config, 'OFFICIAL_PUBLISH_ENABLED', False)
+    monkeypatch.setattr(config, 'PIOS_API_URL', '')
+    monkeypatch.setattr(config, 'PIOS_TOKEN', '')
+    monkeypatch.setattr(config, 'VIDEO_POLL_INTERVAL', 0.0)
     monkeypatch.setattr(config, 'AUTO_REGISTER_MODE', 'off')
     monkeypatch.setattr(config, 'LOGIN_IP_LIMIT', 1000)
     monkeypatch.setattr(config, 'LOGIN_ACCOUNT_LIMIT', 1000)

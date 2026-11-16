@@ -110,7 +110,52 @@ def test_refresh_waiting_no_new_image_and_no_audit_spam(client,headers,monkeypat
         assert db.scalar(select(func.count()).select_from(AutomationEvent).where(AutomationEvent.resource=='account'))==1
 
 
-def test_expired_qr_has_no_url_and_refresh_stays_local(client,headers,monkeypatch,image_bytes,fake_storage):
+def test_explicit_fresh_login_replaces_valid_qr(client,headers,monkeypatch,image_bytes,fake_storage):
+    import io
+    from PIL import Image
+    monkeypatch.setattr(config,'SESSION_ENCRYPTION_KEY',Fernet.generate_key().decode())
+    a=account(client,headers);seen=[]
+    first=response_qr(image_bytes,'attempt-1')
+    out=io.BytesIO();Image.new('RGB',(120,60),'black').save(out,'PNG')
+    second={'ok':True,'status':'awaiting_scan','attempt_id':'attempt-2',
+            'qr_png_base64':base64.b64encode(out.getvalue()).decode(),
+            'expires_at':(datetime.now(timezone.utc)+timedelta(minutes=3)).isoformat()}
+    def adapter(action,payload,request_key=None):
+        seen.append(action);return first if len(seen)==1 else second
+    monkeypatch.setattr(workspace,'request',adapter)
+    assert client.post(f'/api/v1/workspace/accounts/{a["id"]}/login',headers=headers,json={'login_mode':'qr'}).status_code==200
+    assert len(seen)==1
+    # 默认重试仍复用未过期二维码，避免网络重试重复创建远端会话。
+    assert client.post(f'/api/v1/workspace/accounts/{a["id"]}/login',headers=headers,json={'login_mode':'qr'}).status_code==200
+    assert len(seen)==1
+    # 用户主动刷新必须拿到完整寿命的新码。
+    assert client.post(f'/api/v1/workspace/accounts/{a["id"]}/login',headers=headers,json={'login_mode':'qr','fresh':True}).status_code==200
+    assert len(seen)==2 and len(fake_storage)==2
+    with SessionLocal() as db:
+        assert db.get(WorkspaceAccount,a['id']).login_attempt_id=='attempt-2'
+
+
+def test_refresh_rotated_qr_replaces_stored_image(client,headers,monkeypatch,image_bytes,fake_storage):
+    import io
+    from PIL import Image
+    monkeypatch.setattr(config,'SESSION_ENCRYPTION_KEY',Fernet.generate_key().decode())
+    a=account(client,headers);qr=response_qr(image_bytes)
+    monkeypatch.setattr(workspace,'request',lambda *args,**kw:qr)
+    assert client.post(f'/api/v1/workspace/accounts/{a["id"]}/login',headers=headers,json={}).status_code==200
+    out=io.BytesIO();Image.new('RGB',(120,60),'black').save(out,'PNG')
+    # 平台在同一次 attempt 内轮换二维码：expires_at 不变，但图片内容已更新。
+    rotated={**qr,'qr_png_base64':base64.b64encode(out.getvalue()).decode()}
+    monkeypatch.setattr(workspace,'request',lambda *args,**kw:rotated)
+    r=client.post(f'/api/v1/workspace/accounts/{a["id"]}/refresh',headers=headers)
+    assert r.json()['status']=='awaiting_scan'
+    assert len(fake_storage)==2
+    with SessionLocal() as db:
+        assert db.get(WorkspaceAccount,a['id']).qr_object_ref=='s3://test/2'
+
+
+def test_expired_local_qr_still_asks_adapter_for_rotation(client,headers,monkeypatch,image_bytes,fake_storage):
+    import io
+    from PIL import Image
     monkeypatch.setattr(config,'SESSION_ENCRYPTION_KEY',Fernet.generate_key().decode())
     a=account(client,headers)
     monkeypatch.setattr(workspace,'request',lambda *args,**kw:response_qr(image_bytes))
@@ -119,8 +164,15 @@ def test_expired_qr_has_no_url_and_refresh_stays_local(client,headers,monkeypatc
         row=db.get(WorkspaceAccount,a['id']);row.qr_expires_at=utcnow()-timedelta(seconds=1);db.commit()
     s=client.get(f'/api/v1/workspace/accounts/{a["id"]}/session',headers=headers).json()
     assert s['status']=='expired' and not s['qr_available'] and 'qr_url' not in s
-    monkeypatch.setattr(workspace,'request',lambda *_:pytest.fail('过期不应再轮询旧远端会话'))
-    assert client.post(f'/api/v1/workspace/accounts/{a["id"]}/refresh',headers=headers).json()['status']=='expired'
+    # 本地倒计时到期不等于平台会话失效：必须继续问适配器，若平台已轮换出新码
+    # 就恢复 awaiting_scan 并更新图片，而不是直接判死、把刚确认的登录丢掉。
+    out=io.BytesIO();Image.new('RGB',(160,160),'black').save(out,'PNG')
+    rotated={'ok':True,'status':'awaiting_scan','attempt_id':'attempt-1',
+        'qr_png_base64':base64.b64encode(out.getvalue()).decode(),
+        'expires_at':(datetime.now(timezone.utc)+timedelta(minutes=3)).isoformat()}
+    calls=[];monkeypatch.setattr(workspace,'request',lambda *a,**kw:calls.append(a) or rotated)
+    r=client.post(f'/api/v1/workspace/accounts/{a["id"]}/refresh',headers=headers)
+    assert calls and r.json()['status']=='awaiting_scan' and r.json()['qr_available']
 
 
 def test_missing_adapter_saves_account_without_fake_qr(client,headers,monkeypatch):
@@ -187,3 +239,376 @@ def test_qr_capability_requires_trusted_endpoint_and_valid_cipher(client,headers
     assert get()['qr_status']=='configured'
     monkeypatch.setattr(config,'ADAPTER_ALLOWED_HOSTS',[])
     assert get()['qr_status']=='unconfigured'
+
+
+def test_douyin_login_detection_requires_session_cookie():
+    import asyncio
+    import types
+    from app.login_adapter import BrowserManager, PLATFORM_CONFIG
+    assert 'url_contains' not in PLATFORM_CONFIG['douyin']
+
+    class Page:
+        url='https://creator.douyin.com/creator-micro/home'
+        def is_closed(self):return False
+    class Context:
+        def __init__(self,cookies):self.value=cookies
+        async def cookies(self):return self.value
+    session=types.SimpleNamespace(page=Page(),platform='douyin',context=Context([]))
+    manager=BrowserManager()
+    assert asyncio.run(manager._logged_in(session)) is False
+    session.context=Context([{'name':'sessionid','value':'x'*32}])
+    assert asyncio.run(manager._logged_in(session)) is True
+
+
+def test_qr_like_rejects_promo_banner_and_colorful_image():
+    import io
+    from PIL import Image, ImageDraw
+    from app.login_adapter import _qr_like
+
+    def png(image):
+        out=io.BytesIO();image.save(out,'PNG');return out.getvalue()
+
+    code=Image.new('RGB',(256,256),'white');draw=ImageDraw.Draw(code)
+    for x in range(16,240,16):
+        for y in range(16,240,16):
+            if (x//16+y//16)%2==0:draw.rectangle([x,y,x+14,y+14],fill='black')
+    assert _qr_like(png(code)) is True
+
+    # 登录页 4:3 推广轮播：即使主体是黑白也不能当二维码。
+    banner=Image.new('RGB',(480,360),'white')
+    ImageDraw.Draw(banner).rectangle([30,30,450,330],fill='black')
+    assert _qr_like(png(banner)) is False
+
+    # 正方形但颜色丰富的宣传图同样拒绝。
+    promo=Image.new('RGB',(300,300),(230,60,40))
+    ImageDraw.Draw(promo).rectangle([20,20,140,140],fill=(30,90,200))
+    assert _qr_like(png(promo)) is False
+
+
+def test_refresh_extends_expiry_when_platform_rotates_qr(monkeypatch):
+    import asyncio,io
+    from PIL import Image
+    from app import login_adapter
+    from app.login_adapter import BrowserManager, _Session
+
+    def raw(color):
+        out=io.BytesIO();Image.new('RGB',(180,180),color).save(out,'PNG');return out.getvalue()
+
+    class Page:
+        url='https://creator.douyin.com/creator-micro/home'
+        def is_closed(self):return False
+        async def evaluate(self,_):return ''
+    class Context:
+        async def cookies(self):return []
+        async def close(self):pass
+
+    old,new=raw('white'),raw('black')
+    manager=BrowserManager()
+    session=_Session(1,'douyin','attempt',Context(),Page(),old,
+                     login_adapter._now()-timedelta(seconds=5))
+    manager._sessions[1]=session
+    async def fresh(_, selector=''):return new
+    monkeypatch.setattr(login_adapter,'_qr_from_page',fresh)
+    data=asyncio.run(manager.refresh(1,'attempt'))
+    assert data['status']=='awaiting_scan'
+    assert data['qr_png_base64']==base64.b64encode(new).decode()
+    assert session.expires_at>login_adapter._now()
+
+
+def test_session_import_encrypts_cookies_and_audits(client,headers,monkeypatch):
+    monkeypatch.setattr(config,'SESSION_ENCRYPTION_KEY',Fernet.generate_key().decode())
+    a=account(client,headers);seen=[]
+    expires=(datetime.now(timezone.utc)+timedelta(days=2)).isoformat()
+    def adapter(action,payload,request_key=None):
+        seen.append((action,payload))
+        return {'ok':True,'status':'connected','session':{'handle':'imported-handle'},
+                'nickname':'本机扫码账号','expires_at':expires}
+    monkeypatch.setattr(workspace,'request',adapter)
+    body={'platform':'douyin','session':{'cookies':[
+        {'name':'sessionid','value':'s'*64,'domain':'.douyin.com','path':'/','secure':True,
+         'httpOnly':True,'sameSite':'no_restriction','expirationDate':4102444800},
+        {'name':'sessionid_ss','value':'t'*64,'domain':'.douyin.com','path':'/','secure':True},
+    ],'nickname':'备用昵称'}}
+    r=client.post(f'/api/v1/workspace/accounts/{a["id"]}/session-import',headers=headers,json=body)
+    assert r.status_code==200,r.text
+    data=r.json()
+    assert data['status']=='connected' and data['nickname']=='本机扫码账号'
+    assert 'session_ciphertext' not in data and 's'*64 not in r.text and 't'*64 not in r.text
+    assert seen[0][0]=='accounts/import' and seen[0][1]['cookies'][0]['name']=='sessionid'
+    # 适配器收到的 Cookie 已规范化：Chrome 的 no_restriction 转成 Playwright 的 None。
+    assert seen[0][1]['cookies'][0]['sameSite']=='None'
+    with SessionLocal() as db:
+        row=db.get(WorkspaceAccount,a['id'])
+        payload=workspace.decrypt(row.session_ciphertext)
+        assert payload['handle']=='imported-handle' and payload['source']=='cookie_import'
+        assert payload['cookies'][0]['value']=='s'*64
+        ev=db.scalar(select(AutomationEvent).where(AutomationEvent.action=='session_import'))
+        assert ev and ev.detail['cookie_count']==2
+        assert 's'*64 not in str(ev.detail) and 't'*64 not in str(ev.detail)
+
+
+def test_session_import_rejects_wrong_platform_and_missing_cookie(client,headers,monkeypatch):
+    monkeypatch.setattr(config,'SESSION_ENCRYPTION_KEY',Fernet.generate_key().decode())
+    a=account(client,headers)
+    monkeypatch.setattr(workspace,'request',lambda *args,**kw:pytest.fail('校验前不得调用适配器'))
+    wrong=client.post(f'/api/v1/workspace/accounts/{a["id"]}/session-import',headers=headers,
+        json={'platform':'xhs','session':{'cookies':[{'name':'sessionid','value':'x'*20,'domain':'.douyin.com'}]}})
+    assert wrong.status_code==409
+    missing=client.post(f'/api/v1/workspace/accounts/{a["id"]}/session-import',headers=headers,
+        json={'platform':'douyin','session':{'cookies':[{'name':'ttwid','value':'x'*20,'domain':'.douyin.com'}]}})
+    assert missing.status_code==422 and 'sessionid' in missing.text
+    foreign=client.post(f'/api/v1/workspace/accounts/{a["id"]}/session-import',headers=headers,
+        json={'platform':'douyin','session':{'cookies':[{'name':'sessionid','value':'x'*20,'domain':'.example.com'}]}})
+    assert foreign.status_code==422
+
+
+def test_session_import_requires_adapter_verification(client,headers,monkeypatch):
+    monkeypatch.setattr(config,'SESSION_ENCRYPTION_KEY',Fernet.generate_key().decode())
+    a=account(client,headers)
+    monkeypatch.setattr(workspace,'request',lambda *args,**kw:{'ok':True,'status':'invalid','error':'Cookie 已失效'})
+    r=client.post(f'/api/v1/workspace/accounts/{a["id"]}/session-import',headers=headers,
+        json={'platform':'douyin','session':{'cookies':[{'name':'sessionid','value':'x'*20,'domain':'.douyin.com'}]}})
+    assert r.status_code==422 and 'Cookie 已失效' in r.text
+    with SessionLocal() as db:
+        row=db.get(WorkspaceAccount,a['id'])
+        assert row.status=='disconnected' and not row.session_ciphertext
+        assert db.scalar(select(AutomationEvent).where(AutomationEvent.action=='session_import')) is None
+
+
+def test_refresh_restores_imported_session_after_adapter_restart(monkeypatch):
+    import asyncio
+    from app.login_adapter import BrowserManager
+    manager=BrowserManager();called=[]
+    async def restore(account_id,platform,cookies):
+        called.append((account_id,platform,cookies))
+        return {'ok':True,'status':'connected','session':{'handle':'restored'},
+                'nickname':'恢复账号','expires_at':(datetime.now(timezone.utc)+timedelta(days=1)).isoformat()}
+    monkeypatch.setattr(manager,'_import_locked',restore)
+    data=asyncio.run(manager.refresh(1,'',{'cookies':[{'name':'sessionid','value':'x'}]},'douyin'))
+    assert data['status']=='connected' and data['session']['handle']=='restored'
+    assert called and called[0][:2]==(1,'douyin')
+
+
+def test_import_verification_rejects_guest_cookie(monkeypatch):
+    """抖音未登录页面也会下发 sessionid 访客 Cookie，必须用用户接口确认。"""
+    import asyncio
+    from app.login_adapter import BrowserManager
+    manager=BrowserManager()
+    class FakePage:
+        url='https://creator.douyin.com/creator-micro/home'
+        def set_default_timeout(self,*args): pass
+        async def goto(self,*args,**kwargs): pass
+        async def wait_for_timeout(self,*args): pass
+    class FakeContext:
+        async def add_cookies(self,cookies): self.cookies=cookies
+        async def new_page(self): return FakePage()
+        async def close(self): pass
+    async def new_context(): return FakeContext()
+    async def noop(*args,**kwargs): pass
+    async def invalid(session): return {'state':'invalid','error':'用户未登录'}
+    monkeypatch.setattr(manager,'_new_context',new_context)
+    monkeypatch.setattr(manager,'_watch_login_page',lambda *args,**kwargs: None)
+    monkeypatch.setattr(manager,'_evict_if_needed',noop)
+    monkeypatch.setattr(manager,'_user_info',invalid)
+    out=asyncio.run(manager.import_session(9,'douyin',[{'name':'sessionid','value':'x'*20,'domain':'.douyin.com'}]))
+    assert out['status']=='invalid' and '用户未登录' in out['error']
+    assert 9 not in manager._sessions
+
+
+def test_import_verification_accepts_real_user_and_returns_nickname(monkeypatch):
+    import asyncio
+    from app.login_adapter import BrowserManager
+    manager=BrowserManager()
+    class FakePage:
+        url='https://creator.douyin.com/creator-micro/home'
+        def set_default_timeout(self,*args): pass
+        async def goto(self,*args,**kwargs): pass
+        async def wait_for_timeout(self,*args): pass
+    class FakeContext:
+        async def add_cookies(self,cookies): self.cookies=cookies
+        async def new_page(self): return FakePage()
+        async def close(self): pass
+    async def new_context(): return FakeContext()
+    async def noop(*args,**kwargs): pass
+    async def valid(session): return {'state':'ok','nickname':'真实昵称','avatar_url':'https://p3.example/a.jpg'}
+    monkeypatch.setattr(manager,'_new_context',new_context)
+    monkeypatch.setattr(manager,'_watch_login_page',lambda *args,**kwargs: None)
+    monkeypatch.setattr(manager,'_evict_if_needed',noop)
+    monkeypatch.setattr(manager,'_user_info',valid)
+    out=asyncio.run(manager.import_session(9,'douyin',[{'name':'sessionid','value':'x'*20,'domain':'.douyin.com'}]))
+    assert out['status']=='connected' and out['nickname']=='真实昵称'
+    assert out['avatar_url']=='https://p3.example/a.jpg' and len(out['session']['handle'])==32
+    assert 9 in manager._sessions
+
+
+def test_user_info_distinguishes_guest_from_network_error(monkeypatch):
+    import asyncio
+    from app.login_adapter import BrowserManager
+    class Response:
+        def __init__(self,status,data): self.status,self._data=status,data
+        async def json(self): return self._data
+    class Request:
+        def __init__(self,response): self.response=response
+        async def get(self,*args,**kwargs): return self.response
+    class Session:
+        platform='douyin';account_id=1
+        def __init__(self,response): self.context=type('C',(),{'request':Request(response)})()
+    manager=BrowserManager()
+    guest=asyncio.run(manager._user_info(Session(Response(200,{'status_code':8,'status_msg':'用户未登录'}))))
+    assert guest['state']=='invalid' and guest['error']=='用户未登录'
+    ok=asyncio.run(manager._user_info(Session(Response(200,{'status_code':0,'user_info':{'nickname':'枫1','avatar_larger':{'url_list':['https://p3.example/a.jpg']}}}))))
+    assert ok['state']=='ok' and ok['nickname']=='枫1' and ok['avatar_url']=='https://p3.example/a.jpg'
+    down=asyncio.run(manager._user_info(Session(Response(502,{}))))
+    assert down['state']=='unknown'
+
+
+def test_publish_inspect_only_runs_for_connected_account(client,headers,monkeypatch):
+    a=account(client,headers);seen=[]
+    monkeypatch.setattr(workspace,'request',lambda *args,**kw:pytest.fail('未连接不得调用发布页检查'))
+    r=client.post(f'/api/v1/workspace/accounts/{a["id"]}/publish-inspect',headers=headers)
+    assert r.status_code==409
+    with SessionLocal() as db:
+        row=db.get(WorkspaceAccount,a['id'])
+        row.status='connected';row.session_expires_at=utcnow()+timedelta(hours=1);db.commit()
+    def adapter(action,payload,request_key=None):
+        seen.append((action,payload))
+        return {'ok':True,'status':'inspected','url':'https://creator.douyin.com/creator-micro/content/upload',
+                'dom':{'file_inputs':[],'editables':[],'buttons':[],'text':''},'screenshot_png_base64':'aGVsbG8='}
+    monkeypatch.setattr(workspace,'request',adapter)
+    r=client.post(f'/api/v1/workspace/accounts/{a["id"]}/publish-inspect',headers=headers)
+    assert r.status_code==200 and r.json()['status']=='inspected'
+    assert seen and seen[0][0]=='publish/inspect' and seen[0][1]['platform']=='douyin'
+    with SessionLocal() as db:
+        assert db.scalar(select(AutomationEvent).where(AutomationEvent.action=='publish_inspect'))
+
+
+def test_refresh_accepts_late_phone_confirmation_after_qr_expiry(monkeypatch):
+    import asyncio,io
+    from PIL import Image
+    from app import login_adapter
+    from app.login_adapter import BrowserManager, _Session
+
+    out=io.BytesIO();Image.new('RGB',(180,180),'white').save(out,'PNG')
+    class Page:
+        url='https://creator.douyin.com/creator-micro/home'
+        def is_closed(self):return False
+        async def evaluate(self,_):return ''
+    class Context:
+        async def cookies(self):return [{'name':'sessionid','value':'x'*32}]
+        async def close(self):pass
+
+    manager=BrowserManager()
+    session=_Session(1,'douyin','attempt',Context(),Page(),out.getvalue(),
+                     login_adapter._now()-timedelta(seconds=5))
+    manager._sessions[1]=session
+    async def fail(_, selector=''):raise AssertionError('登录态检查必须先于二维码续期')
+    monkeypatch.setattr(login_adapter,'_qr_from_page',fail)
+    data=asyncio.run(manager.refresh(1,'attempt'))
+    assert data['status']=='connected' and data['session']['handle']
+
+
+def test_publish_helpers_select_video_and_normalize_caption():
+    from app.login_adapter import _video_asset, _compose_caption, _publish_fingerprint
+    assets=[{'kind':'image','url':'https://res.example/a.png'},
+            {'kind':'video','url':'https://res.example/a.mp4?sign=one'}]
+    assert _video_asset(assets)['url'].endswith('a.mp4?sign=one')
+    assert _video_asset([{'kind':'image','url':'https://res.example/a.png'}]) is None
+    caption=_compose_caption('标题','正文','话题一, #话题二')
+    assert caption.startswith('标题\n正文') and '#话题一 #话题二' in caption
+    one=_publish_fingerprint({'account_id':1,'platform':'douyin','variant_id':2,'title':'t','body':'b',
+                              'hashtags':'#x','assets':[{'kind':'video','url':'https://res.example/a.mp4?sign=one'}]})
+    two=_publish_fingerprint({'account_id':1,'platform':'douyin','variant_id':2,'title':'t','body':'b',
+                              'hashtags':'#x','assets':[{'kind':'video','url':'https://res.example/a.mp4?sign=two'}]})
+    assert one==two
+
+
+def test_publish_prepare_uploads_without_clicking_and_confirm_publishes(monkeypatch,tmp_path):
+    import asyncio
+    from app.login_adapter import (BrowserManager, _Session, AdapterError, PUBLISH_INSPECT_JS,
+                                   PUBLISH_FIELD_JS, PUBLISH_BUTTON_JS, DISMISS_OVERLAY_JS)
+
+    class Keyboard:
+        async def press(self,*args,**kwargs): pass
+
+    class Locator:
+        def __init__(self,page,kind): self.page,self.kind=page,kind
+        @property
+        def first(self): return self
+        async def count(self): return 1
+        def nth(self,_): return self
+        async def get_attribute(self,name): return 'video/*' if name=='accept' else ''
+        async def set_input_files(self,path):
+            self.page.uploaded=path
+        async def click(self,*args,**kwargs):
+            if self.kind=='publish':
+                self.page.clicks+=1
+                self.page.url='https://www.douyin.com/video/7450000000000000000'
+        async def fill(self,text,*args,**kwargs): self.page.filled=(self.kind,text)
+        async def press(self,*args,**kwargs): pass
+        async def type(self,text,*args,**kwargs): self.page.filled=(self.kind,text)
+
+    class Page:
+        def __init__(self):
+            self.url='https://creator.douyin.com/creator-micro/content/upload'
+            self.clicks=0; self.uploaded=None; self.filled=None; self.closed=False
+            self.keyboard=Keyboard()
+        def set_default_timeout(self,*args): pass
+        async def goto(self,*args,**kwargs): pass
+        async def wait_for_timeout(self,*args,**kwargs): pass
+        async def wait_for_selector(self,*args,**kwargs): pass
+        async def inner_text(self,*args,**kwargs):
+            return '上传视频 作品简介 发布'
+        async def evaluate(self,script):
+            if 'return el ? String' in script: return '标题\n正文 #话题'
+            if 'file_inputs' in script: return {'text':'上传成功 作品简介','file_inputs':[],'editables':[],'buttons':[]}
+            if 'placeholders' in script: return {'title':False,'caption':True,'title_text':'','caption_text':''}
+            if 'data-toker-publish-button' in script: return {'found':True,'disabled':False,'text':'发布'}
+            return ''
+        def locator(self,selector):
+            if selector=='input[type=file]': return Locator(self,'file')
+            if 'title' in selector: return Locator(self,'title')
+            if 'caption' in selector: return Locator(self,'caption')
+            if 'data-toker-publish-button' in selector: return Locator(self,'publish')
+            return Locator(self,'other')
+        def on(self,*args,**kwargs): pass
+        def is_closed(self): return self.closed
+        async def screenshot(self,*args,**kwargs): return b'fake-image'
+        async def close(self): self.closed=True
+
+    class Context:
+        def __init__(self,page): self.page=page
+        async def new_page(self): return self.page
+        async def cookies(self): return []
+        async def close(self): pass
+
+    page=Page()
+    session=_Session(1,'douyin','a',Context(page),page,None,datetime.now(timezone.utc)+timedelta(hours=1))
+    session.handle='h'*32
+    manager=BrowserManager();manager._sessions[1]=session
+    async def fake_download(url):
+        path=tmp_path/'video.mp4';path.write_bytes(b'video');return str(path)
+    monkeypatch.setattr(manager,'_download_video',fake_download)
+    assets=[{'kind':'video','url':'https://res.example/v.mp4'}]
+    payload={'account_id':1,'platform':'douyin','variant_id':2,'title':'标题','body':'正文',
+             'hashtags':'#话题','assets':assets,'session':{'handle':session.handle},'submit':False}
+    prepared=asyncio.run(manager.publish_prepare(payload,'key-prepare'))
+    assert prepared['status']=='awaiting_confirmation' and prepared['confirmation_token']
+    assert page.clicks==0 and page.uploaded and page.filled[0]=='caption'
+    assert len(prepared['steps'])>=1 and any(s.get('screenshot_png_base64') for s in prepared['steps'])
+    confirm={'account_id':1,'platform':'douyin','remote_job_id':prepared['job_id'],
+             'confirmation_token':prepared['confirmation_token'],'human_confirmed':True}
+    result=asyncio.run(manager.publish_confirm(confirm,'key-confirm'))
+    assert result['status']=='published'
+    assert result['url']=='https://www.douyin.com/video/7450000000000000000'
+    assert page.clicks==1 and prepared['job_id'] not in manager._publishes
+    repeat=asyncio.run(manager.publish_confirm(confirm,'key-confirm'))
+    assert repeat['url']==result['url'] and page.clicks==1
+
+
+def test_publish_confirm_rejects_missing_human_confirmation(monkeypatch):
+    import asyncio
+    from app.login_adapter import BrowserManager, AdapterError
+    manager=BrowserManager()
+    with pytest.raises(AdapterError):
+        asyncio.run(manager.publish_confirm({'account_id':1,'remote_job_id':'x',
+                                             'confirmation_token':'y','human_confirmed':False}))

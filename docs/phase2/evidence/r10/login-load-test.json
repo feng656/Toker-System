@@ -1,0 +1,32 @@
+{
+  "date": "2026-11-09",
+  "target": "local demo 127.0.0.1:8779 (SQLite)",
+  "concurrency": 30,
+  "cases": [
+    {
+      "case": "valid",
+      "n": 30,
+      "codes": {
+        "200": 30
+      },
+      "wall_ms": 2434.1,
+      "p50_ms": 2281.1,
+      "p95_ms": 2393.6,
+      "max_ms": 2416.7,
+      "rate_limited": false
+    },
+    {
+      "case": "invalid",
+      "n": 30,
+      "codes": {
+        "401": 30
+      },
+      "wall_ms": 2680.9,
+      "p50_ms": 2559.8,
+      "p95_ms": 2667.2,
+      "max_ms": 2669.7,
+      "rate_limited": false
+    }
+  ],
+  "finding": "30 并发有效/无效登录均无 429、无 5xx；后端尚未实现登录限流/验证码挑战（R10-02 前端已就绪，需浆果补后端）。"
+}

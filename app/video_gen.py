@@ -181,7 +181,46 @@ def make_video(poster_path: Path, out_path: Optional[Path] = None,
 
 
 def gen_video_for_variant(title: str, body_html: str, biz_line: str = "channel",
-                          duration: float = 6.0) -> Path:
-    """端到端：标题+正文 → 海报 → mp4。返回视频文件路径。"""
+                          duration: float = 6.0, db=None, use_platform: bool = True,
+                          resource_id=None) -> Path:
+    """端到端：标题+正文 → 视频。返回视频文件路径。
+
+    优先走平台视频生成（app/video_provider.py，真实 AI 视频）；未配置或调用失败时
+    退回本地海报+ffmpeg 占位视频，保证流程不中断。传 db 时平台调用会写 ai_jobs 审计。
+    """
+    if use_platform:
+        from . import video_provider
+        if video_provider.configured():
+            prompt = _video_prompt(title, body_html, biz_line)
+            try:
+                if db is not None:
+                    result = video_provider.generate(db, prompt, resource_id=resource_id,
+                                                     duration_sec=int(duration))
+                    return Path(result['path'])
+                receipt = video_provider.submit(prompt, duration_sec=int(duration))
+                data = video_provider.wait(int(receipt['task_id']))
+                return video_provider.download(data, POSTER_DIR / f"video_{receipt['task_id']}.mp4")
+            except Exception:
+                # 平台失败不吞掉业务：退回占位视频，错误已由 video_provider 记入 ai_jobs。
+                pass
     poster = make_poster(title, body_html, biz_line)
     return make_video(poster, duration=duration)
+
+
+def _video_prompt(title: str, body_html: str, biz_line: str) -> str:
+    """把图文内容压成一段竖版短视频提示词（不虚构业绩，只描述画面与卖点）。"""
+    body = _strip_html(body_html)
+    points = re.findall(r'[✅✓•·\-★●]\s*([^\n]{6,60})', body)
+    if not points:
+        points = [s.strip() for s in re.split(r'[。！？；\n]', body) if 8 <= len(s.strip()) <= 60][:3]
+    scene = {"project": "政企项目交付场景", "channel": "工程商合作场景"}.get(biz_line, "LED 显示行业场景")
+    lines = [f"竖版 9:16 短视频，{scene}，画面干净专业，深蓝科技感背景配亮色强调。",
+             f"内容主题（只用于理解画面，不要在画面中渲染文字）：{title}"]
+    if points:
+        lines.append("用镜头依次呈现这些信息对应的场景（不要生成文字或字幕）：" + "；".join(points[:3]))
+    # 平台视频模型画中文大字会缺笔/错字（实测豆包会把“报告厅选型”写成“招督厅选形”），
+    # 成片只出干净画面，标题和卖点由人工在剪辑时叠加。
+    lines.append("画面不要出现任何文字、字幕、标语、水印或电话号码，文字由后期添加。")
+    lines.append("结尾以品牌蓝色光效收束。")
+    lines.append("不出现虚构业绩数字、客户名称或价格。")
+    return "\n".join(lines)

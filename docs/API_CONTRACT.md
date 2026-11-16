@@ -37,6 +37,10 @@ OCR `pending_review/confirmed`。外部推送 `pending/sent/failed/dead`。线�
 | 线索 | GET /leads；GET/PUT /leads/{id} | assignee用销售username；status/follow_notes；详情包含来源和跟进历史 |
 | 推送队列 | GET /outbox；POST /outbox/process；POST /outbox/{id}/retry | 未配置/网络/业务错误均可见；dead可人工复活 |
 | 看板 | GET /dashboard/funnel、/topics、/trend | trend支持start/end，最多365天区间 |
+| AI状态 | GET /llm/status；GET /video/status | 返回是否已配置、模型与默认参数，不返回密钥 |
+| 视频生成 | POST /video/generate | 202返回task_id；body可给prompt或variant_id（按正文拼提示词），可选duration_sec/resolution/aspect_ratio/model/seed/ref_image_base64；同参数重复提交复用同一任务；未配置平台视频服务503 |
+| 视频任务 | GET /video/tasks/{id} | status=pending/running/succeeded/failed；succeeded时result含task_id/path/model_used/credits_charged/object_key |
+| 视频成片 | GET /video/tasks/{id}/file | 仅succeeded可下载；只允许读取VIDEO_OUTPUT_DIR内文件，越界或未完成404 |
 
 发布链接验证仅证明格式和公开URL形式，**不声称远端文章真实存在或归属已核验**；不自动请求用户URL，避免SSRF。真实性由运营回填和抽检负责。不同平台提交ID、草稿地址不计数。统计仅status=published、URL非空且有published_at；重复相同链接回填不重复加量。
 

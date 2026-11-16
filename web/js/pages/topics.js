@@ -4,8 +4,9 @@
  */
 import { ref, reactive, computed, onMounted } from '../core/vue.js';
 import { topicApi } from '../api/library.js';
+import { phase2Api } from '../api/phase2.js';
 import { notify, errorMessage } from '../core/ui.js';
-import { bizLineClass, bizLineName, topicStatusName, TOPIC_THEMES } from '../core/format.js';
+import { bizLineClass, bizLineName, topicStatusName, fmtDate, TOPIC_THEMES } from '../core/format.js';
 import { canWriteContent } from '../core/store.js';
 
 export default {
@@ -16,6 +17,13 @@ export default {
     const error = ref('');
     const forbidden = ref(false);
     const filter = reactive({ biz_line: '', theme: '', status: '', keyword: '' });
+
+    /* ---- 需求反哺：评论/私信需求沉淀为选题建议 ---- */
+    const activeTab = ref('pool');
+    const suggestions = ref([]);
+    const sgLoading = ref(false);
+    const sgError = ref('');
+    const converting = reactive({});
 
     const dlg = ref(false);
     const saving = ref(false);
@@ -82,11 +90,55 @@ export default {
       }
     }
 
-    onMounted(load);
+    async function loadSuggestions() {
+      sgLoading.value = true;
+      sgError.value = '';
+      try {
+        suggestions.value = (await phase2Api.suggestions()) || [];
+      } catch (e) {
+        sgError.value = errorMessage(e);
+        suggestions.value = [];
+      } finally {
+        sgLoading.value = false;
+      }
+    }
+
+    async function convertOne(s) {
+      converting[s.id] = true;
+      try {
+        const d = await phase2Api.convertSuggestion(s.id);
+        notify.ok(`建议 #${s.id} 已转为选题 #${d.topic_id}`);
+        await Promise.all([loadSuggestions(), load()]);
+      } catch (e) {
+        notify.err(errorMessage(e));
+      } finally {
+        converting[s.id] = false;
+      }
+    }
+
+    function onTabChange(name) {
+      if (name === 'feedback') loadSuggestions();
+    }
+
+    function goPool() {
+      activeTab.value = 'pool';
+    }
+
+    function refresh() {
+      if (activeTab.value === 'feedback') return loadSuggestions();
+      return load();
+    }
+
+    onMounted(() => {
+      load();
+      loadSuggestions();
+    });
 
     return {
       topics, filtered, loading, error, forbidden, filter, dlg, saving, form,
-      load, save, setStatus, canWriteContent, bizLineClass, bizLineName, topicStatusName, TOPIC_THEMES,
+      activeTab, suggestions, sgLoading, sgError, converting,
+      load, save, setStatus, loadSuggestions, convertOne, onTabChange, goPool, refresh,
+      canWriteContent, bizLineClass, bizLineName, topicStatusName, fmtDate, TOPIC_THEMES,
     };
   },
   template: `
@@ -97,10 +149,12 @@ export default {
   </div>
   <div class="row">
     <el-button v-if="canWriteContent" size="small" type="primary" @click="dlg = true">+ 新增选题</el-button>
-    <el-button size="small" @click="load" :loading="loading">刷新</el-button>
+    <el-button size="small" @click="refresh" :loading="loading || sgLoading">刷新</el-button>
   </div>
 </div>
 
+<el-tabs v-model="activeTab" @tab-change="onTabChange">
+<el-tab-pane label="选题池" name="pool">
 <div class="toolbar">
   <el-select v-model="filter.biz_line" placeholder="全部业务线" clearable size="small" style="width:120px">
     <el-option label="甲方线" value="project"/>
@@ -151,6 +205,39 @@ export default {
     </div>
   </div>
 </template>
+</el-tab-pane>
+
+<el-tab-pane :label="'需求反哺' + (suggestions.length ? ' (' + suggestions.length + ')' : '')" name="feedback">
+  <div class="toolbar">
+    <span class="muted">评论任务「收集需求」后，系统会把真实客户需求沉淀到这里；转为选题即可进入内容生产。</span>
+    <el-button size="small" class="right" @click="loadSuggestions" :loading="sgLoading">刷新建议</el-button>
+  </div>
+  <div v-if="sgError" class="alert-strip error">
+    加载失败：{{ sgError }}
+    <el-button size="small" text type="danger" @click="loadSuggestions" style="margin-left:8px">重试</el-button>
+  </div>
+  <div v-else-if="sgLoading" class="card"><el-skeleton :rows="4" animated /></div>
+  <div v-else-if="!suggestions.length" class="card">
+    <div class="state-box"><el-icon><i class="el-icon-lightbulb" /></el-icon>暂无需求反哺建议。执行评论任务的「收集需求」后会自动生成。</div>
+  </div>
+  <template v-else>
+    <div class="card" v-for="s in suggestions" :key="s.id">
+      <div class="row">
+        <b>{{ s.title }}</b>
+        <span class="line-tag" :class="bizLineClass(s.biz_line)">{{ bizLineName(s.biz_line) }}</span>
+        <el-tag v-if="s.topic_id" size="small" type="success">已转为选题 #{{ s.topic_id }}</el-tag>
+        <span class="muted right">建议 #{{ s.id }} · {{ fmtDate(s.created_at) }}</span>
+      </div>
+      <div class="muted mt6" style="line-height:1.8">{{ s.need }}</div>
+      <div class="row mt10">
+        <el-button v-if="!s.topic_id" size="small" type="primary" :loading="converting[s.id]"
+                   :disabled="!canWriteContent" @click="convertOne(s)">一键转为选题</el-button>
+        <el-button v-else size="small" @click="goPool">在选题池查看</el-button>
+      </div>
+    </div>
+  </template>
+</el-tab-pane>
+</el-tabs>
 
 <el-dialog v-model="dlg" title="新增选题" width="540px">
   <el-form label-width="86px">

@@ -1,6 +1,7 @@
+import re
 from datetime import date
 from typing import Literal
-from pydantic import Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .schemas import Input, Platform, VersionIn
 
 
@@ -105,6 +106,53 @@ class AccountLoginIn(Input):
     login_mode: Literal['qr', 'password'] = 'qr'
     username: str = Field(default='', max_length=200)
     password: str = Field(default='', max_length=300)
+    # 用户主动点“扫码登录/重新获取”时必须换一张新码；默认复用未过期二维码
+    # 只用于网络重试等幂等场景，避免把剩余寿命很短的旧码当成新码展示。
+    fresh: bool = False
+
+
+class ImportCookieIn(BaseModel):
+    """兼容 Chrome chrome.cookies.getAll() 的输出字段；多余字段忽略。"""
+    model_config = ConfigDict(extra='ignore')
+
+    name: str = Field(min_length=1, max_length=200)
+    value: str = Field(default='', max_length=4096)
+    domain: str = Field(min_length=1, max_length=300)
+    path: str = Field(default='/', max_length=300)
+    expires: float | None = None
+    expirationDate: float | None = None
+    httpOnly: bool = False
+    secure: bool = True
+    sameSite: str | None = None
+    hostOnly: bool | None = None
+    session: bool | None = None
+
+    @field_validator('name')
+    @classmethod
+    def safe_name(cls, value):
+        if not re.fullmatch(r'[A-Za-z0-9_.\-]+', value):
+            raise ValueError('Cookie 名称包含非法字符')
+        return value
+
+    @field_validator('path')
+    @classmethod
+    def safe_path(cls, value):
+        return value if value.startswith('/') else '/'
+
+
+class ImportSessionPayloadIn(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+
+    cookies: list[ImportCookieIn] = Field(min_length=1, max_length=60)
+    nickname: str = Field(default='', max_length=100)
+    avatar_url: str = Field(default='', max_length=700)
+
+
+class SessionImportIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    platform: str = Field(min_length=1, max_length=50)
+    session: ImportSessionPayloadIn
 
 
 class PublishJobIn(Input):

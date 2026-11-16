@@ -5,6 +5,7 @@
  */
 import { reactive } from './vue.js';
 import { ApiError } from './http.js';
+import { httpErrorInfo } from './status.js';
 
 const EP = () => window.ElementPlus;
 
@@ -23,14 +24,32 @@ export const notify = {
   info: (m) => toast('info', m),
 };
 
-export function errorMessage(e) {
+/**
+ * 错误的完整展示信息（标题 / 主文案 / 下一步 / 是否可重试）。
+ * 页面需要倒计时或挑战时用本函数；只展示一行时用 errorMessage()。
+ */
+export function errorInfo(e) {
   if (e instanceof ApiError) {
-    if (e.offline) return '网络异常：连不上后端服务，请确认服务已启动后重试';
-    if (e.forbidden) return '当前角色没有该操作的权限';
-    if (e.unauthorized) return '登录已失效，请重新登录';
-    return e.detail || `请求失败（${e.status}）`;
+    const info = httpErrorInfo(e.status, e.code, e.detail);
+    if (e.rateLimited && Number.isFinite(e.retryAfter) && e.retryAfter > 0) {
+      info.text = `${info.text}（约 ${e.retryAfter} 秒后可重试）`;
+      info.retryAfter = e.retryAfter;
+    }
+    if ((e.unavailable || e.status === 503) && Number.isFinite(e.retryAfter) && e.retryAfter > 0) {
+      info.next = `约 ${e.retryAfter} 秒后重试`;
+    }
+    return info;
   }
-  return (e && e.message) || '未知错误';
+  return {
+    code: 'unknown_error',
+    title: '未知错误',
+    text: (e && e.message) || '未知错误',
+    next: '稍后重试；持续失败请联系管理员',
+  };
+}
+
+export function errorMessage(e) {
+  return errorInfo(e).text;
 }
 
 /**

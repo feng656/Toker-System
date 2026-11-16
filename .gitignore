@@ -10,6 +10,14 @@ var/
 browser_state/
 video_out/
 uploads/
+# 本机扫码/素材整理产物：绝不入库
+live-scan/
+素材整理/
+素材整理_import/
+session-cookies.json
+*.cookies.json
+storage-state.json
+*.har
 # Python and local reports
 .venv/
 venv/

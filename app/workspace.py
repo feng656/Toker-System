@@ -4,7 +4,8 @@
 import base64
 import hashlib
 import json
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timedelta, timezone
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException
@@ -13,6 +14,8 @@ from . import config, storage
 from .db import utcnow
 from .models import Platform, WorkspaceAccount, WorkspaceJob, ContentVariant, AssetUsage, MediaAsset, AutomationEvent
 from .tasks import lock
+
+LOG = logging.getLogger(__name__)
 
 
 def cipher():
@@ -33,12 +36,119 @@ def decrypt(value):
         raise HTTPException(409, '会话无法解密，请重新登录')
 
 
+# Cookie 导入只允许平台自己的域，避免把任意站点的凭据写进云端浏览器。
+SESSION_COOKIE_DOMAINS = {'douyin': ('douyin.com', 'amemv.com')}
+SESSION_COOKIE_NAMES = {'douyin': ('sessionid', 'sessionid_ss')}
+
+
+def _same_site(value):
+    return {
+        'no_restriction': 'None', 'none': 'None',
+        'lax': 'Lax', 'strict': 'Strict',
+    }.get(str(value or '').lower())
+
+
+def normalize_cookies(platform_code, cookies):
+    """把 Chrome 导出的 Cookie 规范成适配器可写入 Playwright 的结构。"""
+    suffixes = SESSION_COOKIE_DOMAINS.get(platform_code)
+    if not suffixes:
+        raise HTTPException(422, '该平台暂未开放 Cookie 导入')
+    result, seen, total = [], set(), 0
+    for item in cookies:
+        domain = str(item.domain or '').strip().lower()
+        bare = domain.lstrip('.')
+        if not bare or not any(bare == suffix or bare.endswith('.' + suffix) for suffix in suffixes):
+            raise HTTPException(422, f'Cookie 域名不属于该平台：{domain or "空"}')
+        key = (item.name, domain, item.path)
+        if key in seen:
+            continue
+        seen.add(key)
+        expires = item.expires if item.expires is not None else item.expirationDate
+        if item.session or expires is None or expires <= 0:
+            expires = None
+        entry = {
+            'name': item.name,
+            'value': item.value,
+            'domain': domain,
+            'path': item.path or '/',
+            'httpOnly': bool(item.httpOnly),
+            'secure': bool(item.secure),
+        }
+        if expires is not None:
+            entry['expires'] = float(expires)
+        same_site = _same_site(item.sameSite)
+        if same_site:
+            entry['sameSite'] = same_site
+        result.append(entry)
+        total += len(item.name) + len(item.value)
+    if total > 64 * 1024:
+        raise HTTPException(422, 'Cookie 数据过大')
+    names = {c['name'] for c in result}
+    required = SESSION_COOKIE_NAMES.get(platform_code, ())
+    if required and not names.intersection(required):
+        raise HTTPException(422, '缺少平台登录会话 Cookie（sessionid / sessionid_ss）')
+    return result
+
+
+def import_session(db, account, body, actor_id):
+    """导入本机浏览器已登录的 Cookie；必须由云端适配器实际校验通过才落库。"""
+    cipher()
+    lock(db, f'account:{account.id}')
+    db.refresh(account)
+    platform = db.get(Platform, account.platform_id)
+    from .login_catalog import check_login_platform
+    check_login_platform(platform)
+    if body.platform != platform.code:
+        raise HTTPException(409, '导入的平台与账号平台不一致')
+    cookies = normalize_cookies(platform.code, body.session.cookies)
+    data = request('accounts/import', {'account_id': account.id, 'platform': platform.code,
+                                       'cookies': cookies})
+    if (data.get('status') != 'connected' or not isinstance(data.get('session'), dict)
+            or not data['session'].get('handle')):
+        reason = str(data.get('error') or '').strip()[:120]
+        raise HTTPException(422, 'Cookie 未通过平台登录校验' + (f'：{reason}' if reason else ''))
+    expires_at = expiry(data.get('expires_at'))
+    account.session_ciphertext = encrypt({
+        'handle': str(data['session']['handle'])[:200],
+        'cookies': cookies,
+        'source': 'cookie_import',
+    })
+    account.session_expires_at = expires_at
+    account.status, account.error = 'connected', ''
+    account.nickname = str(data.get('nickname') or body.session.nickname or account.label)[:100]
+    account.avatar_url = str(data.get('avatar_url') or body.session.avatar_url or '')[:700]
+    account.qr_object_ref, account.qr_expires_at, account.login_attempt_id = '', None, ''
+    event(db, 'account', account.id, 'session_import', actor_id, {
+        'platform': platform.code,
+        'cookie_count': len(cookies),
+        'cookie_names': sorted({c['name'] for c in cookies})[:30],
+        'expires_at': expires_at.isoformat(),
+    })
+    db.commit()
+    return public_account(account)
+
+
+def publish_inspect(db, account, actor_id):
+    """只读打开平台发布页并返回 DOM 摘要/截图，用于发布适配器选择器联调。"""
+    lock(db, f'account:{account.id}')
+    db.refresh(account)
+    platform = db.get(Platform, account.platform_id)
+    from .login_catalog import check_login_platform
+    check_login_platform(platform)
+    if account.status != 'connected' or not account.session_expires_at or account.session_expires_at <= utcnow():
+        raise HTTPException(409, '账号未登录或会话已过期，请重新扫码')
+    data = request('publish/inspect', {'account_id': account.id, 'platform': platform.code})
+    event(db, 'account', account.id, 'publish_inspect', actor_id)
+    db.commit()
+    return data
+
+
 def event(db, resource, resource_id, action, actor_id=None, detail=None):
     db.add(AutomationEvent(resource=resource, resource_id=resource_id, action=action,
                            actor_id=actor_id, detail=detail or {}))
 
 
-def request(action, payload, request_key=None):
+def request(action, payload, request_key=None, timeout=75):
     from .ai_providers import trusted_url
     if not config.BROWSER_ENABLED or not config.BROWSER_ADAPTER_URL or not config.BROWSER_ADAPTER_TOKEN:
         raise HTTPException(503, '未配置受信浏览器适配服务及认证，不能执行真实平台操作')
@@ -47,10 +157,14 @@ def request(action, payload, request_key=None):
     if request_key:
         headers['Idempotency-Key'] = request_key
     try:
-        response = httpx.post(url + '/v2/' + action, json=payload, headers=headers, timeout=60, follow_redirects=False)
+        response = httpx.post(url + '/v2/' + action, json=payload, headers=headers,
+                              timeout=timeout, follow_redirects=False)
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict) or data.get('ok') is not True:
+            message = data.get('error') if isinstance(data, dict) else None
+            if isinstance(message, str) and 0 < len(message.strip()) <= 200:
+                raise HTTPException(502, '适配服务：' + message.strip())
             raise ValueError('invalid response')
         return data
     except (httpx.HTTPError, ValueError):
@@ -97,7 +211,18 @@ def apply_login(account, data):
         if not isinstance(data.get('session'), dict) or not data['session']:
             raise HTTPException(502, '登录响应缺少真实会话')
         expires_at = expiry(data.get('expires_at'))
-        ciphertext = encrypt(data['session'])
+        session = dict(data['session'])
+        # 适配器旧版本/部分刷新响应只回 handle；若本地还存着导入的 Cookie，
+        # 不能因为一次刷新就把可恢复的会话降级成不可恢复的句柄。
+        if not session.get('cookies') and account.session_ciphertext:
+            try:
+                previous = decrypt(account.session_ciphertext)
+            except HTTPException:
+                previous = {}
+            if isinstance(previous, dict) and previous.get('cookies'):
+                session['cookies'] = previous['cookies']
+                session['source'] = previous.get('source') or 'cookie_import'
+        ciphertext = encrypt(session)
         account.session_expires_at, account.session_ciphertext = expires_at, ciphertext
         account.status, account.error = 'connected', ''
         account.nickname = str(data.get('nickname', ''))[:100]
@@ -123,8 +248,16 @@ def apply_login(account, data):
                 png = clean_image(base64.b64decode(raw, validate=True))
             except (KeyError, ValueError, HTTPException):
                 raise HTTPException(502, '扫码服务返回的二维码图片无效')
-            # 相同轮询图片不重复保存。
-            if account.login_attempt_id == str(data['attempt_id']) and account.qr_expires_at == expires_at and account.qr_object_ref:
+            # 同一次扫码会话里平台也会轮换二维码；必须按图片内容更新存储。
+            # 只按 attempt_id/expires_at 去重会把新 token 丢掉，前端继续展示旧图，
+            # 手机扫码就会报“该二维码状态错误”。
+            same = False
+            if account.qr_object_ref:
+                try:
+                    same = storage.get(account.qr_object_ref) == png
+                except Exception:
+                    same = False
+            if same:
                 ref = account.qr_object_ref
             else:
                 try:
@@ -150,8 +283,9 @@ def login(db, account, body, actor_id):
     platform = db.get(Platform, account.platform_id)
     from .login_catalog import check_login_platform
     check_login_platform(platform)
-    if body.login_mode == 'qr' and public_account(account)['qr_available']:
-        return public_account(account)  # 连点/网络重试复用未过期二维码，不重复创建远端会话。
+    # 连点/网络重试默认复用未过期二维码；用户主动刷新传 fresh=true 时重开扫码会话。
+    if body.login_mode == 'qr' and not body.fresh and public_account(account)['qr_available']:
+        return public_account(account)
     if body.login_mode == 'password' and (not body.username or not body.password):
         raise HTTPException(422, '账密登录必须提供账号和密码')
     data = request('accounts/login', {'account_id': account.id, 'platform': platform.code,
@@ -169,15 +303,14 @@ def refresh(db, account, actor_id):
     from .login_catalog import check_login_platform
     platform = db.get(Platform, account.platform_id)
     check_login_platform(platform)
-    if public_account(account)['status'] == 'expired':
-        apply_login(account, {'status': 'expired'})
-        db.commit()
-        return public_account(account)
+    # 不能只按本地 qr_expires_at 提前判死：手机确认可能比倒计时晚到，
+    # 适配器也可能已经轮换出新码。始终先问适配器，由它给出登录态/新码/过期。
     if account.status not in ('awaiting_scan', 'connected'):
         raise HTTPException(409, '请先获取二维码并发起登录')
     before = account.status
     payload = {'account_id': account.id, 'platform': platform.code, 'attempt_id': account.login_attempt_id}
-    if account.status == 'connected':
+    if account.session_ciphertext:
+        # 导入的 Cookie 会话在适配器重启后需要靠这里恢复上下文。
         payload['session'] = decrypt(account.session_ciphertext)
     data = request('accounts/refresh', payload)
     apply_login(account, data)
@@ -269,7 +402,8 @@ def run_publish(db, job, actor_id, confirm=False, retry=False):
     job.attempts += 1
     try:
         data = request('publish/confirm' if confirm else 'publish/prepare', payload,
-                       f'publish:{job.request_key}:' + ('confirm' if confirm else 'prepare'))
+                       f'publish:{job.request_key}:' + ('confirm' if confirm else 'prepare'),
+                       timeout=120 if confirm else 240)
         evidence = steps(data)
         if confirm:
             if data.get('status') != 'published' or not data.get('url'):
@@ -289,7 +423,23 @@ def run_publish(db, job, actor_id, confirm=False, retry=False):
     except Exception as exc:
         # confirm超时可能已发布：保留待确认及相同幂等键，不能重建任务再盲发。
         job.status = 'awaiting_confirmation' if confirm else 'failed'
-        job.error = type(exc).__name__ + ': 发布适配失败，核对远端状态后用同任务重试'
-        event(db, 'publish', job.id, 'failed', actor_id)
+        # 把适配器给出的可读原因带给运营（例如「账号会话不在线，请重新登录」），
+        # 否则前端只能看到笼统的失败类型，无法判断该重登还是该重试。
+        if isinstance(exc, HTTPException):
+            reason = str(exc.detail or '').strip()
+        elif isinstance(exc, ValueError):
+            reason = str(exc).strip()
+        else:
+            reason = ''
+        LOG.exception('publish job %s failed (confirm=%s)', job.id, confirm)
+        job.error = (
+            f'{type(exc).__name__}: {reason}' if reason
+            else f'{type(exc).__name__}: 发布适配失败，核对远端状态后用同任务重试'
+        )[:300]
+        # 适配器明确判定会话失效时同步账号状态，避免前端继续显示「已连接」并反复重试。
+        if isinstance(exc, HTTPException) and '会话' in reason and ('登录' in reason or '失效' in reason):
+            account.status, account.error = 'expired', reason[:200]
+            event(db, 'account', account.id, 'publish_session_expired', actor_id)
+        event(db, 'publish', job.id, 'failed', actor_id, {'reason': job.error})
     db.commit()
     return public_job(job)

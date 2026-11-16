@@ -98,8 +98,13 @@ def health():
 @app.middleware('http')
 async def response_headers(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith('/api') or 'text/html' in response.headers.get('content-type', ''):
+    path = request.url.path
+    if path.startswith('/api') or 'text/html' in response.headers.get('content-type', ''):
         response.headers['Cache-Control'] = 'no-store'
+    elif path.startswith(('/js/', '/assets/', '/vendor/')) or path.endswith(('.js', '.css')):
+        # 前端为无构建的 ES module，文件名不带哈希；允许缓存但每次必须回源校验，
+        # 避免部署后浏览器继续运行旧页面脚本。
+        response.headers['Cache-Control'] = 'no-cache, must-revalidate'
     if request.url.path.startswith('/api/') and not request.url.path.startswith('/api/v1/'):
         response.headers['Deprecation'] = 'true'
         response.headers['Link'] = '</api/v1>; rel="successor-version"'

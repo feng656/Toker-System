@@ -6,16 +6,16 @@
  *
  * 约束：
  *  - 拖动只做「复制 + 填充」，不直接发布（沿用《06-系统框架V0.1》2.2）；
- *  - 真实平台 API 发布按钮置灰并标注「P1 接入」；
+ *  - 「沙盒发布」仅在内容版本已填充、同平台账号已连接且版本可发布时启用；
+ *    执行只上传与填稿并留截图，真实发布必须人工确认；
  *  - 「标记已发」必须回填发布链接（延续「空链接不计入发布量」硬门槛）；
  *  - 素材不足不阻塞工作台，给「去素材库补充 / 先用文字版」入口。
  */
-import { ref, reactive, computed, onMounted, onUnmounted } from '../core/vue.js';
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from '../core/vue.js';
 import { contentApi } from '../api/content.js';
 import { platformApi } from '../api/platform.js';
 import { phase2Api } from '../api/phase2.js';
 import { dashboardApi } from '../api/business.js';
-import { materialApi } from '../api/library.js';
 import { notify, errorMessage } from '../core/ui.js';
 import {
   platformName, copyText, composeCopyText, PLATFORM_HOME, bizLineClass, bizLineName, validatePublishUrl,
@@ -59,6 +59,11 @@ export default {
     const dragging = ref(null);
     const textOnly = ref(false);
     const assigned = reactive({}); // variantId → 通道 key（卡片显示「已复制到 XX」）
+    const platformAccounts = ref(null);
+
+    function openAddPlatform() {
+      platformAccounts.value?.openAdd();
+    }
 
     let timer = null;
 
@@ -86,11 +91,11 @@ export default {
       }
     }
 
-    /** 素材覆盖统计：失败不阻塞工作台 */
+    /** 媒体素材覆盖统计：读 /assets（图片/视频），失败不阻塞工作台 */
     async function loadMaterials() {
       materialError.value = '';
       try {
-        const list = await materialApi.list();
+        const list = await phase2Api.assets({ limit: 200 });
         materials.value = list || [];
       } catch (e) {
         materials.value = [];
@@ -99,12 +104,14 @@ export default {
     }
 
     const coverage = computed(() => {
-      const c = { public: 0, masked: 0, internal: 0, total: 0 };
+      const c = { public: 0, masked: 0, internal: 0, total: 0, image: 0, video: 0 };
       (materials.value || []).forEach((m) => {
         const k = m.publicity || 'internal';
         if (c[k] === undefined) c[k] = 0;
         c[k] += 1;
         c.total += 1;
+        if (m.kind === 'image') c.image += 1;
+        if (m.kind === 'video') c.video += 1;
       });
       return c;
     });
@@ -113,10 +120,12 @@ export default {
 
     /* ---------------- 二期：平台工作空间（R2/R6 扫码登录 + 沙盒发布） ---------------- */
     const wsJobs = ref([]);
+    const wsAccounts = ref([]);
     const wsLoading = ref(false);
     const wsError = ref('');
     const jobStatusName = (s) => ({ queued: '排队中', running: '执行中', awaiting_confirmation: '待人工确认', succeeded: '已发布', failed: '失败', cancelled: '已取消' }[s] || s);
     const jobStatusTag = (s) => ({ queued: 'info', running: 'primary', awaiting_confirmation: 'warning', succeeded: 'success', failed: 'danger', cancelled: 'info' }[s] || 'info');
+    const accountStatusName = (s) => ({ connected: '已连接', awaiting_scan: '待扫码', expired: '登录已过期', disconnected: '未登录' }[s] || s);
 
     async function loadWorkspace() {
       wsLoading.value = true;
@@ -124,6 +133,7 @@ export default {
       try {
         const ov = await phase2Api.wsOverview();
         wsJobs.value = ov.jobs || [];
+        wsAccounts.value = ov.accounts || [];
       } catch (e) {
         wsError.value = errorMessage(e);
       } finally {
@@ -131,19 +141,39 @@ export default {
       }
     }
 
-    async function jobRun(j) {
-      try { await phase2Api.publishJobRun(j.id); notify.ok('任务已提交沙盒执行'); await loadWorkspace(); }
-      catch (e) { notify.err(errorMessage(e)); }
+    /** 把任务状态同步进弹窗，并异步取回每一步的截图（后端返回 data URI，避免混合内容拦截）。 */
+    function setSandboxJob(job) {
+      sandbox.job = job || null;
+      sandbox.error = job && job.status === 'failed' ? (job.error || '沙盒执行失败') : '';
+      sandbox.shots = [];
+      if (job) loadSandboxShots(job);
     }
 
-    async function jobConfirm(j) {
-      try { await phase2Api.publishJobConfirm(j.id); notify.ok('已确认，继续发布流程'); await loadWorkspace(); }
-      catch (e) { notify.err(errorMessage(e)); }
+    async function loadSandboxShots(job) {
+      const steps = (job && job.steps) || [];
+      const shots = [];
+      sandbox.shots = shots;
+      for (let i = 0; i < steps.length; i += 1) {
+        if (!steps[i] || !steps[i].screenshot_ref) { shots.push(''); continue; }
+        try {
+          const data = await phase2Api.publishJobStepShot(job.id, i);
+          shots.push((data && data.url) || '');
+        } catch (e) {
+          shots.push('');
+        }
+        sandbox.shots = shots.slice();
+      }
     }
 
-    async function jobCancel(j) {
-      try { await phase2Api.publishJobCancel(j.id); notify.info('任务已取消'); await loadWorkspace(); }
-      catch (e) { notify.err(errorMessage(e)); }
+    /** 任务列表只是历史记录；点击「查看」在原位打开同一个沙盒弹窗。 */
+    async function openJobRecord(j) {
+      sandbox.open = true;
+      sandbox.loading = false;
+      sandbox.busy = false;
+      sandbox.error = '';
+      sandbox.accountId = j.account_id;
+      sandbox.variant = items.value.find((x) => x.id === j.variant_id) || null;
+      setSandboxJob(j);
     }
 
     /* ---------------- 平台登录（浏览器代理，沿用原工作台能力） ---------------- */
@@ -246,6 +276,7 @@ export default {
         channel.fields.forEach((f) => { if (f.type === 'media') draft[f.key] = ''; });
         draft.textOnly = true;
       }
+      draft.sourceVariant = variant;
       drafts[key] = draft;
       active.value = key;
       assigned[variant.id] = key;
@@ -264,6 +295,260 @@ export default {
     const cur = computed(() => drafts[active.value] || {});
     const curChannel = computed(() => CHANNEL_MAP[active.value] || CHANNELS[0]);
     const curFields = computed(() => curChannel.value.fields);
+
+    /* ---------------- 沙盒发布（工作台 composer，复用二期发布任务） ---------------- */
+    const sandbox = reactive({
+      open: false, loading: false, accounts: [], accountId: null, busy: false, error: '',
+      job: null, variant: null, shots: [],
+      assets: [], videoLibrary: [], assetLoading: false, assetError: '', pickVideoId: null, assetBusy: false,
+    });
+
+    /** 当前 composer 的来源版本；列表刷新后优先用最新数据，找不到时回退投放时的快照 */
+    const curVariant = computed(() => {
+      const id = cur.value.sourceId;
+      if (!id) return null;
+      return items.value.find((x) => x.id === id) || cur.value.sourceVariant || null;
+    });
+
+    const sandboxAccounts = computed(() => {
+      const pid = sandbox.variant ? sandbox.variant.platform_id : null;
+      return (sandbox.accounts || [])
+        .filter((a) => !a.deleted_at && a.platform_id === pid)
+        .sort((a, b) => (a.status === 'connected' ? 0 : 1) - (b.status === 'connected' ? 0 : 1));
+    });
+
+    const sandboxHasConnected = computed(() => sandboxAccounts.value.some((a) => a.status === 'connected'));
+
+    const sandboxSessionError = computed(() =>
+      /登录|会话/.test((sandbox.job && sandbox.job.error) || ''));
+
+    const sandboxCanSubmit = computed(() => {
+      const a = (sandbox.accounts || []).find((x) => x.id === sandbox.accountId);
+      return !!(a && a.status === 'connected');
+    });
+
+    /** 非空即禁用；文案同时作为按钮 tooltip */
+    const sandboxBlock = computed(() => {
+      if (!cur.value.sourceId) return '先把左侧内容拖进来';
+      const v = curVariant.value;
+      if (!v) return '内容版本信息未加载，请点右上「刷新」后重试';
+      if (cur.value.sourcePlatform && cur.value.sourcePlatform !== active.value) {
+        return `跨平台改写的版本不能直接沙盒发布，请切回「${channelName(cur.value.sourcePlatform)}」通道`;
+      }
+      if (v.status !== 'pending' || v.confirm_status !== 'confirmed' || v.published_url) {
+        return '该内容版本尚未审核确认或已发布，请先在内容管理完成审核';
+      }
+      if (v.compliance_ok === false) return '该内容命中合规红线，不能沙盒发布';
+      // 账号未连接时也允许打开弹窗：弹窗内可先补齐发布素材，再引导去扫码。
+      return '';
+    });
+
+    /** 当前版本已关联的视频素材；视频平台沙盒发布依赖它上传 */
+    const sandboxLinkedVideo = computed(() =>
+      (sandbox.assets || []).find((a) => a.kind === 'video') || null);
+
+    /** 读取当前版本已关联素材与素材库公开视频，供沙盒弹窗选择/核对 */
+    async function loadSandboxAssets(v) {
+      if (!v) return;
+      sandbox.assetLoading = true;
+      sandbox.assetError = '';
+      try {
+        const [linked, videos] = await Promise.all([
+          phase2Api.variantAssets(v.id),
+          phase2Api.assets({ kind: 'video', publicity: 'public', limit: 200 }),
+        ]);
+        sandbox.assets = linked || [];
+        sandbox.videoLibrary = videos || [];
+      } catch (e) {
+        sandbox.assetError = errorMessage(e);
+      } finally {
+        sandbox.assetLoading = false;
+      }
+    }
+
+    /** 把素材库视频关联到当前版本；关联会重置审核状态，随即按当前规则重新审核。 */
+    async function linkSandboxVideo() {
+      const v = sandbox.variant;
+      const aid = sandbox.pickVideoId;
+      if (!v || !aid) return;
+      const asset = (sandbox.videoLibrary || []).find((a) => a.id === aid);
+      try {
+        await EP().ElMessageBox.confirm(
+          `将把「${asset ? asset.title : '素材 #' + aid}」关联到内容版本 #${v.id}。`
+          + '关联会重置该版本的审核状态，并在下一步按当前合规/质检规则重新审核；通过后才能进入沙盒发布。',
+          '关联视频素材',
+          { type: 'warning', confirmButtonText: '关联并重新审核', cancelButtonText: '取消' },
+        );
+      } catch (e) {
+        return;
+      }
+      sandbox.assetBusy = true;
+      sandbox.assetError = '';
+      try {
+        await phase2Api.linkVariantAssets(v.id, { asset_ids: [aid], expected_version: v.version });
+        const linked = await phase2Api.variant(v.id);
+        try {
+          await phase2Api.bulkReview({
+            variant_ids: [v.id],
+            action: 'approve',
+            expected_versions: { [v.id]: linked.version },
+          });
+        } catch (reviewError) {
+          sandbox.assetError = '视频已关联，但自动重新审核未通过：' + errorMessage(reviewError)
+            + '；请到内容管理处理后再发布。';
+          notify.warn(sandbox.assetError);
+          await loadSandboxAssets(v);
+          return;
+        }
+        const approved = await phase2Api.variant(v.id);
+        sandbox.variant = approved;
+        sandbox.pickVideoId = null;
+        await Promise.all([loadAll(), loadWorkspace(), loadSandboxAssets(approved)]);
+        notify.ok('视频已关联并完成审核，可以进入沙盒发布');
+      } catch (e) {
+        sandbox.assetError = errorMessage(e);
+        notify.err(sandbox.assetError);
+      } finally {
+        sandbox.assetBusy = false;
+      }
+    }
+
+    async function openSandboxPublish() {
+      if (sandboxBlock.value) {
+        notify.warn(sandboxBlock.value);
+        return;
+      }
+      sandbox.open = true;
+      sandbox.variant = curVariant.value;
+      sandbox.loading = true;
+      sandbox.error = '';
+      sandbox.job = null;
+      sandbox.shots = [];
+      sandbox.accountId = null;
+      sandbox.assets = [];
+      sandbox.videoLibrary = [];
+      sandbox.assetError = '';
+      sandbox.pickVideoId = null;
+      sandbox.assetBusy = false;
+      try {
+        // 打开弹窗时重新取账号，避免刚扫码连接后页面状态仍是旧的
+        const list = await phase2Api.wsAccounts();
+        wsAccounts.value = list || [];
+        sandbox.accounts = list || [];
+        const first = sandboxAccounts.value.find((a) => a.status === 'connected');
+        sandbox.accountId = first ? first.id : null;
+      } catch (e) {
+        sandbox.error = '工作空间账号加载失败：' + errorMessage(e);
+      } finally {
+        sandbox.loading = false;
+      }
+      loadSandboxAssets(sandbox.variant);
+    }
+
+    function goConnectAccount() {
+      sandbox.open = false;
+      nextTick(() => {
+        const card = document.querySelector('.platform-accounts');
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    }
+
+    /** 在弹窗内直接创建并进入沙盒，不再把视线带到页面下方的任务列表。 */
+    async function submitSandboxPublish() {
+      const v = sandbox.variant || curVariant.value;
+      const account = (sandbox.accounts || []).find((a) => a.id === sandbox.accountId);
+      if (!v) { notify.err('当前 composer 没有内容版本，先从左侧拖一条内容进来'); return; }
+      if (!account) { notify.err('请选择同平台的工作空间账号'); return; }
+      if (account.status !== 'connected') {
+        notify.err(`账号「${account.label}」当前未连接，请先完成扫码登录`);
+        return;
+      }
+      sandbox.busy = true;
+      sandbox.error = '';
+      try {
+        const job = await phase2Api.publishJob({
+          request_key: `variant_${v.id}_${account.id}`,
+          account_id: account.id,
+          variant_id: v.id,
+        });
+        setSandboxJob(job);
+        if (job.status === 'queued') {
+          await runSandboxJob(false);
+        } else {
+          await loadWorkspace();
+        }
+      } catch (e) {
+        sandbox.error = errorMessage(e);
+        notify.err(sandbox.error);
+      } finally {
+        sandbox.busy = false;
+      }
+    }
+
+    /** 执行/重试共用；请求完成前弹窗保持打开并显示「沙盒执行中」。 */
+    async function runSandboxJob(retry) {
+      const job = sandbox.job;
+      if (!job) return;
+      sandbox.busy = true;
+      sandbox.error = '';
+      try {
+        const result = retry
+          ? await phase2Api.publishJobRetry(job.id)
+          : await phase2Api.publishJobRun(job.id);
+        setSandboxJob(result);
+        await loadWorkspace();
+        if (result.status === 'awaiting_confirmation') {
+          notify.ok('沙盒预览已就绪，请核对步骤截图后确认发布');
+        } else if (result.status === 'succeeded') {
+          notify.ok('发布完成，已记录真实作品链接');
+          await loadAll();
+        } else if (result.status === 'failed') {
+          notify.err(result.error || '沙盒执行失败');
+        }
+      } catch (e) {
+        sandbox.error = errorMessage(e);
+        notify.err(sandbox.error);
+      } finally {
+        sandbox.busy = false;
+      }
+    }
+
+    async function confirmSandboxJob() {
+      const job = sandbox.job;
+      if (!job) return;
+      sandbox.busy = true;
+      sandbox.error = '';
+      try {
+        const result = await phase2Api.publishJobConfirm(job.id);
+        setSandboxJob(result);
+        await loadWorkspace();
+        if (result.status === 'succeeded') {
+          notify.ok('发布完成，已记录真实作品链接');
+          await loadAll();
+        } else if (result.status === 'failed') {
+          notify.err(result.error || '发布确认失败，请核对平台作品状态');
+        }
+      } catch (e) {
+        sandbox.error = errorMessage(e);
+        notify.err(sandbox.error);
+      } finally {
+        sandbox.busy = false;
+      }
+    }
+
+    async function cancelSandboxJob() {
+      const job = sandbox.job;
+      if (!job) return;
+      try {
+        const result = await phase2Api.publishJobCancel(job.id);
+        setSandboxJob(result);
+        notify.info('任务已取消');
+        await loadWorkspace();
+      } catch (e) {
+        sandbox.error = errorMessage(e);
+        notify.err(sandbox.error);
+      }
+    }
 
     async function copyComposer() {
       const ok = await copyText(buildCopy(curChannel.value, cur.value));
@@ -390,16 +675,20 @@ export default {
       assigned, textOnly, coverage, materials, materialError, materialEmpty,
       onDragStart, onDragEnd, onDragOver, onDragOut, onDrop, onPick,
       switchChannel, copyComposer, openBackend, markPublished, useTextOnly, gotoMaterials,
-      channelName,
-      wsJobs, wsLoading, wsError, loadWorkspace, jobRun, jobConfirm, jobCancel,
-      jobStatusName, jobStatusTag, isAdmin,
+      channelName, platformAccounts, openAddPlatform,
+      wsJobs, wsAccounts, wsLoading, wsError, loadWorkspace, openJobRecord,
+      jobStatusName, jobStatusTag, accountStatusName,
+      sandbox, sandboxAccounts, sandboxHasConnected, sandboxCanSubmit, sandboxBlock, sandboxSessionError,
+      sandboxLinkedVideo, openSandboxPublish, goConnectAccount, submitSandboxPublish, linkSandboxVideo,
+      runSandboxJob, confirmSandboxJob, cancelSandboxJob,
+      isAdmin,
     };
   },
   template: `
 <div class="page-head">
   <div>
     <div class="page-title">今日内容工作台</div>
-    <div class="page-sub">左侧内容池 → 拖到右侧平台 tab → 自动复制该平台格式文案并填充 composer → 微调 → 复制文案 / 打开平台后台人工发布 → 回填链接标记已发。拖动只复制不发布。</div>
+    <div class="page-sub">左侧内容池 → 拖到右侧平台 tab → 自动复制该平台格式文案并填充 composer → 微调 → 沙盒发布（人工确认）/ 复制文案 / 打开平台后台人工发布 → 回填链接标记已发。拖动只复制不发布。</div>
   </div>
   <div class="row">
     <el-button size="small" @click="loadAll" :loading="loading">刷新</el-button>
@@ -428,7 +717,7 @@ export default {
       <div class="card wk-cover">
         <div class="row" style="justify-content:space-between">
           <b>素材库覆盖</b>
-          <span class="muted">可公开 {{ coverage.public }} 条 · 需脱敏 {{ coverage.masked }} 条 · 仅内部 {{ coverage.internal }} 条</span>
+          <span class="muted">图片 {{ coverage.image }} · 视频 {{ coverage.video }} · 可公开 {{ coverage.public }} 条 / 共 {{ coverage.total }} 条</span>
         </div>
         <div v-if="materialError" class="muted mt6">素材覆盖统计读取失败：{{ materialError }}（不影响投放）</div>
         <div v-else-if="materialEmpty" class="alert-strip warn mt10">
@@ -439,7 +728,7 @@ export default {
           </div>
         </div>
         <div v-else class="muted mt6">
-          图片/视频仍需人工上传到平台后台；工作台只做文案与结构，缺图不阻塞投放。
+          媒体素材需先关联到具体内容版本并通过审核，沙盒发布会按关联结果上传；未关联的素材不会自动使用。
         </div>
         <div class="row mt10">
           <el-button size="small" text type="primary" @click="gotoMaterials">去素材库补充</el-button>
@@ -518,6 +807,8 @@ export default {
             {{ c.name }}
             <span v-if="drafts[c.key] && drafts[c.key].sourceId" class="wk-tab-dot"></span>
           </div>
+          <button v-if="isAdmin()" type="button" class="wk-tab wk-tab-add" title="添加平台账号"
+                  aria-label="添加平台账号" @click="openAddPlatform">+</button>
         </div>
 
         <div class="wk-dropzone"
@@ -559,33 +850,32 @@ export default {
             <el-button type="primary" size="small" @click="copyComposer">复制文案</el-button>
             <el-button size="small" @click="openBackend">打开{{ curChannel.name }}后台</el-button>
             <el-button size="small" @click="markPublished" :disabled="!cur.sourceId">标记已发</el-button>
-            <el-tooltip content="P1 接入：真实平台发布 API 未开放，本期只做复制 + 人工发布" placement="top">
-              <span><el-button size="small" disabled>发布（API）· P1 接入</el-button></span>
+            <el-tooltip :content="sandboxBlock || '提交到沙盒适配器：执行只上传视频并填稿留截图，需人工确认后才真正发布'" placement="top">
+              <span><el-button size="small" type="primary" plain :disabled="!!sandboxBlock" @click="openSandboxPublish">沙盒发布</el-button></span>
             </el-tooltip>
           </div>
-          <div class="gap-note">标记已发需要粘贴发布链接：未回填链接不计入「已发布」（硬门槛，不允许绕过）。</div>
+          <div class="gap-note">沙盒发布需先选已连接账号；点「沙盒发布」后在弹窗内直接进入沙盒，核对截图后再人工确认。下方「沙盒发布记录」只作历史留痕。标记已发需回填链接：未回填链接不计入「已发布」（硬门槛，不允许绕过）。</div>
         </div>
       </div>
 
-      <platform-accounts />
+      <platform-accounts ref="platformAccounts" @changed="loadWorkspace" />
 
-      <div class="card" v-if="wsJobs.length || wsError">
+      <div class="card" id="ws-jobs-card" v-if="wsJobs.length || wsError">
         <div class="row" style="justify-content:space-between">
-          <b>沙盒发布任务</b>
-          <el-button size="small" :loading="wsLoading" @click="loadWorkspace">刷新任务</el-button>
+          <b>沙盒发布记录</b>
+          <el-button size="small" :loading="wsLoading" @click="loadWorkspace">刷新记录</el-button>
         </div>
-        <div class="muted mt6">预览 → 人工确认 → 发布 → 截图存证</div>
+        <div class="muted mt6">这里只保留历史任务和截图入口；发布操作统一在上方 composer 的「沙盒发布」弹窗内完成。</div>
         <div v-if="wsError" class="alert-strip warn mt10" role="alert">{{ wsError }}</div>
-        <div v-for="j in wsJobs.slice(0, 8)" :key="j.id" class="row mt10" style="justify-content:space-between;border-top:1px dashed #ebeef5;padding-top:8px">
-          <div class="row">
+        <div v-for="j in wsJobs.slice(0, 8)" :key="j.id" class="row mt10"
+             style="justify-content:space-between;border-top:1px dashed #ebeef5;padding-top:8px">
+          <div class="row" style="min-width:0">
             <el-tag size="small" :type="jobStatusTag(j.status)">{{ jobStatusName(j.status) }}</el-tag>
             <span class="muted">任务 #{{ j.id }} · 内容版本 {{ j.variant_id }}</span>
             <span v-if="j.error" class="muted tiny">（{{ j.error }}）</span>
           </div>
           <div class="row">
-            <el-button v-if="j.status === 'queued'" size="small" text type="primary" @click="jobRun(j)">执行</el-button>
-            <el-button v-if="j.status === 'awaiting_confirmation'" size="small" text type="success" @click="jobConfirm(j)">确认继续</el-button>
-            <el-button v-if="['queued','failed','awaiting_confirmation'].indexOf(j.status) >= 0" size="small" text type="danger" @click="jobCancel(j)">取消</el-button>
+            <el-button size="small" text type="primary" @click="openJobRecord(j)">查看</el-button>
           </div>
         </div>
       </div>
@@ -613,5 +903,131 @@ export default {
   </div>
 
 </template>
+
+<el-dialog v-model="sandbox.open" class="sandbox-dialog" append-to-body :title="sandbox.job ? ('沙盒发布 · 任务 #' + sandbox.job.id) : '沙盒发布'" width="680px" :close-on-click-modal="false">
+  <div v-if="sandbox.variant" class="mb10">
+    <div class="muted">内容版本</div>
+    <b>#{{ sandbox.variant.id }} · {{ platformName(sandbox.variant.platform) }} · r{{ sandbox.variant.revision }}</b>
+    <div class="muted mt6">标题：{{ sandbox.variant.cover_text || sandbox.variant.content_title || '（无）' }}</div>
+  </div>
+  <div v-if="sandbox.error" class="alert-strip error mt10">{{ sandbox.error }}</div>
+  <div v-if="sandbox.loading" class="card"><el-skeleton :rows="2" animated /></div>
+
+  <template v-else-if="!sandbox.job">
+    <div class="card" style="padding:12px;margin-bottom:12px">
+      <div class="row" style="justify-content:space-between">
+        <b>发布素材</b>
+        <span class="muted tiny">素材库公开视频 {{ sandbox.videoLibrary.length }} 条</span>
+      </div>
+      <div v-if="sandbox.assetLoading" class="muted mt6">素材关联读取中…</div>
+      <div v-else-if="sandbox.assetError" class="alert-strip error mt6">{{ sandbox.assetError }}</div>
+      <template v-else>
+        <div v-if="sandboxLinkedVideo" class="alert-strip ok mt6">
+          已关联视频：<b>{{ sandboxLinkedVideo.title }}</b>（素材 #{{ sandboxLinkedVideo.id }}）
+        </div>
+        <template v-else>
+          <div class="alert-strip warn mt6">
+            该内容版本未关联视频素材，沙盒发布会因缺少视频而失败。请从素材库选择一条公开视频；关联会重置审核状态，系统会立即按当前规则重新审核，通过后才能发布。
+          </div>
+          <div v-if="sandbox.videoLibrary.length" class="row mt10">
+            <el-select v-model="sandbox.pickVideoId" placeholder="选择公开视频素材" style="flex:1">
+              <el-option v-for="a in sandbox.videoLibrary" :key="a.id"
+                         :label="'#' + a.id + ' · ' + a.title" :value="a.id"></el-option>
+            </el-select>
+            <el-button type="primary" plain :loading="sandbox.assetBusy"
+                       :disabled="!sandbox.pickVideoId || sandbox.assetBusy"
+                       @click="linkSandboxVideo">关联并重新审核</el-button>
+          </div>
+          <div v-else class="muted mt6">
+            素材库还没有可公开的视频。
+            <el-button size="small" text type="primary" @click="gotoMaterials">去素材库上传</el-button>
+          </div>
+        </template>
+      </template>
+    </div>
+
+    <div v-if="!sandboxAccounts.length" class="alert-strip warn">
+      当前平台还没有工作空间账号。请先在下方「平台账号」添加并扫码连接{{ curChannel.name }}账号。
+      <div class="mt10"><el-button size="small" @click="goConnectAccount">去添加 / 连接账号</el-button></div>
+    </div>
+    <div v-else-if="!sandboxHasConnected" class="alert-strip warn">
+      当前平台的账号均未连接（{{ sandboxAccounts.map((a) => a.label + '：' + accountStatusName(a.status)).join('；') }}）。
+      请先完成扫码登录，再发起沙盒发布。
+      <div class="mt10"><el-button size="small" @click="goConnectAccount">去平台账号扫码连接</el-button></div>
+    </div>
+    <template v-else>
+      <div class="muted mt6">选择已连接的同平台账号；确认后直接在弹窗内进入沙盒，上传视频、填稿并截图。</div>
+      <el-select v-model="sandbox.accountId" style="width:100%" placeholder="选择工作空间账号">
+        <el-option v-for="a in sandboxAccounts" :key="a.id"
+                   :label="a.label + '（' + accountStatusName(a.status) + '）'"
+                   :value="a.id" :disabled="a.status !== 'connected'"></el-option>
+      </el-select>
+      <div class="gap-note mt10">
+        幂等键：variant_{{ sandbox.variant.id }}_{{ sandbox.accountId || '账号' }}；重复提交不会重复建任务。
+        任务使用该内容版本已审核的文案，composer 里的临时修改不会同步；需改稿请先在内容管理保存新版本。
+        沙盒只做上传和填稿并截图，确认继续前不会真正发布；下方「沙盒发布记录」仅作历史留痕。
+      </div>
+    </template>
+  </template>
+
+  <template v-else>
+    <div class="row" style="justify-content:space-between">
+      <div class="row">
+        <el-tag size="small" :type="jobStatusTag(sandbox.job.status)">{{ jobStatusName(sandbox.job.status) }}</el-tag>
+        <span class="muted">内容版本 #{{ sandbox.job.variant_id }}</span>
+      </div>
+      <span v-if="sandbox.job.attempts" class="muted tiny">第 {{ sandbox.job.attempts }} 次执行</span>
+    </div>
+    <div v-if="sandbox.busy" class="alert-strip info mt10">
+      沙盒浏览器正在打开平台发布页、上传视频并填写文案，通常需要 30–120 秒；请保持弹窗打开。
+    </div>
+    <div v-else-if="sandbox.job.status === 'queued'" class="alert-strip info mt10">
+      任务已创建，尚未执行；点下方「开始执行」进入沙盒。
+    </div>
+    <div v-else-if="sandbox.job.status === 'failed'" class="alert-strip error mt10">
+      本次执行失败：{{ sandbox.job.error || '未知原因' }}。按提示修正后可直接在当前弹窗重试。
+      <div v-if="sandboxSessionError" class="mt10">
+        <el-button size="small" @click="goConnectAccount">去重新登录账号</el-button>
+      </div>
+    </div>
+    <div v-else-if="sandbox.job.status === 'awaiting_confirmation'" class="alert-strip warn mt10">
+      视频和文案已填好，尚未点击发布。请逐张核对下面截图，确认无误后点「确认继续发布」。
+    </div>
+    <div v-else-if="sandbox.job.status === 'succeeded'" class="alert-strip ok mt10">
+      已发布并记录真实作品链接；请到内容管理核对发布链接。
+    </div>
+
+    <div v-if="sandbox.job.steps && sandbox.job.steps.length" class="mt14">
+      <div class="muted">执行步骤与截图</div>
+      <div v-for="(s, idx) in sandbox.job.steps" :key="idx" class="card" style="margin:8px 0;padding:10px">
+        <div class="row" style="justify-content:space-between">
+          <b class="tiny">{{ idx + 1 }}. {{ s.name || '步骤' }}</b>
+          <el-tag size="small" type="success">{{ s.status || 'ok' }}</el-tag>
+        </div>
+        <img v-if="sandbox.shots[idx]" :src="sandbox.shots[idx]" alt="沙盒步骤截图"
+             style="display:block;width:100%;max-height:360px;object-fit:contain;margin-top:8px;border:1px solid #ebeef5;border-radius:6px" />
+        <div v-else class="muted tiny mt6">截图读取中或该步骤无截图</div>
+      </div>
+    </div>
+    <div v-else-if="!sandbox.busy" class="muted mt10">本次没有留下步骤截图。</div>
+  </template>
+
+  <template #footer>
+    <el-button @click="sandbox.open = false">关闭</el-button>
+    <template v-if="sandbox.job">
+      <el-button v-if="sandbox.job.status === 'queued'" type="primary"
+                 :loading="sandbox.busy" :disabled="sandbox.busy" @click="runSandboxJob(false)">开始执行</el-button>
+      <el-button v-if="sandbox.job.status === 'failed'" type="primary"
+                 :loading="sandbox.busy" :disabled="sandbox.busy" @click="runSandboxJob(true)">重试</el-button>
+      <el-button v-if="sandbox.job.status === 'awaiting_confirmation'" type="success"
+                 :loading="sandbox.busy" :disabled="sandbox.busy" @click="confirmSandboxJob">确认继续发布</el-button>
+      <el-button v-if="['queued','failed','awaiting_confirmation'].indexOf(sandbox.job.status) >= 0"
+                 type="danger" plain :disabled="sandbox.busy" @click="cancelSandboxJob">取消任务</el-button>
+    </template>
+    <el-button v-else-if="!sandbox.loading && sandboxHasConnected" type="primary"
+               :loading="sandbox.busy" :disabled="!sandboxCanSubmit || sandbox.busy"
+               @click="submitSandboxPublish">创建并进入沙盒</el-button>
+  </template>
+</el-dialog>
 `,
 };

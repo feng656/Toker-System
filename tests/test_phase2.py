@@ -56,7 +56,7 @@ def test_platform_code_immutable_roles_and_invalid_codes(client,headers):
     assert client.put(f'/api/v1/platforms/{p["id"]}',json={'code':'renamed','name':'改名'},headers=headers).status_code==409
     assert client.post('/api/v1/platforms',json={'code':'../private','name':'坏代码'},headers=headers).status_code==422
     sales=token_for(client,'sales01')
-    for path in ('/platforms','/workspace/accounts','/assets','/dm/messages','/automation/events'):
+    for path in ('/platforms','/workspace/accounts','/assets','/dm/messages','/automation/events','/automation/status'):
         assert client.get('/api/v1'+path,headers=sales).status_code==403
 
 
@@ -102,6 +102,11 @@ def test_assets_validate_private_permissions_generate_usage(client,headers,image
     assert len(usage)==1
     monkeypatch.setattr('app.storage.signed_url',lambda ref:'https://storage.invalid/signed')
     assert client.get(f'/api/v1/assets/{asset["id"]}/url',headers=headers).status_code==200
+    thumb=client.get(f'/api/v1/assets/{asset["id"]}/thumb',headers=headers)
+    assert thumb.status_code==200 and thumb.headers['content-type']=='image/jpeg'
+    assert thumb.content.startswith(b'\xff\xd8\xff')
+    assert client.get('/api/v1/assets/999999/thumb',headers=headers).status_code==404
+    assert client.get(f'/api/v1/assets/{asset["id"]}/thumb',headers=token_for(client,'sales01')).status_code==403
 
 
 def test_manual_draft_needs_quality_and_review(client,headers):
@@ -192,7 +197,7 @@ def test_publish_preparation_confirmation_and_idempotence(client,headers,connect
     j=post(client,headers,'/workspace/publish-jobs',{'request_key':'publish-1','account_id':connected,'variant_id':v['id']},201)
     evidence=[{'name':'preview','status':'ok','screenshot_png_base64':base64.b64encode(image_bytes).decode()}]
     calls=[]
-    def adapter(action,payload,key=None):
+    def adapter(action,payload,key=None,**kwargs):
         calls.append((action,key))
         if action=='publish/prepare':
             assert payload['submit'] is False
@@ -205,6 +210,35 @@ def test_publish_preparation_confirmation_and_idempotence(client,headers,connect
     assert post(client,headers,f'/workspace/publish-jobs/{j["id"]}/confirm')['status']=='succeeded'
     assert post(client,headers,f'/workspace/publish-jobs/{j["id"]}/confirm')['status']=='succeeded'
     assert len(calls)==2 and len(fake_storage)==2
+
+
+def test_publish_failure_exposes_adapter_reason(client,headers,connected,monkeypatch):
+    from fastapi import HTTPException
+    v=generated(client,headers)[0];post(client,headers,f'/variants/{v["id"]}/approve')
+    j=post(client,headers,'/workspace/publish-jobs',{'request_key':'publish-reason','account_id':connected,'variant_id':v['id']},201)
+    def fail(*args,**kwargs):
+        raise HTTPException(502,'适配服务：账号会话不在线，请重新登录')
+    monkeypatch.setattr(workspace,'request',fail)
+    result=post(client,headers,f'/workspace/publish-jobs/{j["id"]}/run')
+    assert result['status']=='failed'
+    assert '账号会话不在线' in result['error']
+
+
+def test_refresh_preserves_imported_cookies(client,headers,connected,monkeypatch):
+    expiry=(datetime.now(timezone.utc)+timedelta(hours=2)).isoformat()
+    cookies=[{'name':'sessionid','value':'secret','domain':'.douyin.com','path':'/'}]
+    with SessionLocal() as db:
+        a=db.get(WorkspaceAccount,connected)
+        a.session_ciphertext=workspace.encrypt({'handle':'old-handle','cookies':cookies,'source':'cookie_import'})
+        db.commit()
+    monkeypatch.setattr(workspace,'request',lambda *a,**k:{'ok':True,'status':'connected',
+        'session':{'handle':'new-handle'},'expires_at':expiry})
+    result=post(client,headers,f'/workspace/accounts/{connected}/refresh')
+    assert result['status']=='connected'
+    with SessionLocal() as db:
+        payload=workspace.decrypt(db.get(WorkspaceAccount,connected).session_ciphertext)
+        assert payload['handle']=='new-handle'
+        assert payload['cookies']==cookies and payload['source']=='cookie_import'
 
 
 def test_publish_revalidates_draft_after_preview(client,headers,connected,image_bytes,fake_storage,monkeypatch):
@@ -319,6 +353,24 @@ def test_dm_high_risk_escalates_and_ai_candidate_requires_approval(client,header
 def test_automation_daily_budget_and_default_off(client,headers,connected,monkeypatch):
     tid=make_comments(client,headers,connected,monkeypatch);post(client,headers,f'/comment-tasks/{tid}/approve')
     monkeypatch.setattr(config,'AUTOMATION_ENABLED',False)
+    status=client.get('/api/v1/automation/status',headers=headers).json()
+    assert status['enabled'] is False and status['comment_send_enabled'] is False
+    assert status['interval_seconds']>=0 and status['daily_limit']>=0
     assert client.post(f'/api/v1/comment-tasks/{tid}/run',headers=headers).status_code==503
     monkeypatch.setattr(config,'AUTOMATION_ENABLED',True);monkeypatch.setattr(config,'AUTOMATION_DAILY_LIMIT',0)
+    assert client.get('/api/v1/automation/status',headers=headers).json()['enabled'] is True
     assert client.post(f'/api/v1/comment-tasks/{tid}/run',headers=headers).status_code==429
+
+
+def test_variant_assets_can_be_listed_and_linked(client,headers,image_bytes,fake_storage):
+    upload=client.post('/api/v1/assets/upload',files=[('files',('a.png',image_bytes,'image/png'))],headers=headers)
+    assert upload.status_code==201,upload.text
+    aid=upload.json()['items'][0]['id']
+    assert client.put(f'/api/v1/assets/{aid}',json={'title':'关联测试','publicity':'public'},headers=headers).status_code==200
+    v=generated(client,headers)[0]
+    assert client.get(f'/api/v1/variants/{v["id"]}/assets',headers=headers).json()==[]
+    linked=post(client,headers,f'/variants/{v["id"]}/assets',{'asset_ids':[aid],'expected_version':v['version']})
+    assert linked['asset_ids']==[aid] and linked['review_required'] is True
+    assets=client.get(f'/api/v1/variants/{v["id"]}/assets',headers=headers).json()
+    assert [a['id'] for a in assets]==[aid]
+    assert client.get(f'/api/v1/variants/{v["id"]}',headers=headers).json()['confirm_status']=='none'

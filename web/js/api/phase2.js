@@ -13,6 +13,7 @@ export const phase2Api = {
 
   /* ---- R4 版本筛选 / 批量审核 / 草稿 ---- */
   variants: (query) => http.get('/variants', query),
+  variant: (vid) => http.get(`/variants/${vid}`),
   bulkReview: (body) => http.post('/variants/bulk-review', body),
   createDraft: (body) => http.post('/contents/drafts', body),
 
@@ -24,6 +25,8 @@ export const phase2Api = {
 
   /* ---- R3 素材（图片媒体，MinIO） ---- */
   assets: (query) => http.get('/assets', query),
+  variantAssets: (vid) => http.get(`/variants/${vid}/assets`),
+  linkVariantAssets: (vid, body) => http.post(`/variants/${vid}/assets`, body),
   uploadAssets: (fd) => http.upload('/assets/upload', fd),
   editAsset: (aid, body) => http.put(`/assets/${aid}`, body),
   assetUrl: (aid) => http.get(`/assets/${aid}/url`),
@@ -41,11 +44,14 @@ export const phase2Api = {
   wsOverview: () => http.get('/workspace/overview'),
   publishJob: (body) => http.post('/workspace/publish-jobs', body),
   publishJobGet: (jid) => http.get(`/workspace/publish-jobs/${jid}`),
-  publishJobRun: (jid) => http.post(`/workspace/publish-jobs/${jid}/run`),
-  publishJobConfirm: (jid) => http.post(`/workspace/publish-jobs/${jid}/confirm`),
+  publishJobRun: (jid) => http.post(`/workspace/publish-jobs/${jid}/run`, undefined, { timeoutMs: 260000 }),
+  publishJobConfirm: (jid) => http.post(`/workspace/publish-jobs/${jid}/confirm`, undefined, { timeoutMs: 150000 }),
+  publishJobRetry: (jid) => http.post(`/workspace/publish-jobs/${jid}/retry`, undefined, { timeoutMs: 260000 }),
   publishJobCancel: (jid) => http.post(`/workspace/publish-jobs/${jid}/cancel`),
+  publishJobStepShot: (jid, index) => http.get(`/workspace/publish-jobs/${jid}/steps/${index}/screenshot`),
 
   /* ---- R7 授权评论任务 ---- */
+  automationStatus: () => http.get('/automation/status'),
   commentTasks: () => http.get('/comment-tasks'),
   commentTaskDetail: (tid) => http.get(`/comment-tasks/${tid}`),
   createCommentTask: (body) => http.post('/comment-tasks', body),
@@ -75,6 +81,9 @@ export const phase2Api = {
   /* ---- R10 登录策略 ---- */
   authPolicy: () => http.get('/auth/policy'),
   authChallenge: () => http.post('/auth/challenge'),
+
+  /* ---- 看板平台维度 ---- */
+  platformDashboard: () => http.get('/dashboard/platforms'),
 
   /* ---- 需求反哺 ---- */
   suggestions: () => http.get('/topic-suggestions'),

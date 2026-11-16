@@ -159,3 +159,15 @@ class BrowserPublishIn(VersionIn):
 
 class GenerateIn(Input):
     scheduled: date | None = None
+
+
+class VideoIn(Input):
+    """视频生成请求：可直接给 prompt，也可给 variant_id 由系统按正文拼提示词。"""
+    prompt: str | None = Field(default=None, min_length=1, max_length=4000)
+    variant_id: int | None = Field(default=None, gt=0)
+    duration_sec: int | None = Field(default=None, ge=1, le=30)
+    resolution: str | None = Field(default=None, max_length=20)
+    aspect_ratio: str | None = Field(default=None, max_length=10)
+    model: str | None = Field(default=None, max_length=100)
+    seed: int | None = Field(default=None, ge=0)
+    ref_image_base64: str | None = Field(default=None, max_length=40_000_000)

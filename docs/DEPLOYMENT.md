@@ -27,7 +27,21 @@ API启动不会自动建表或创建弱默认密码；迁移未达head会拒绝�
 
 Tesseract本地适配需安装 `tesseract-ocr`、中文简体和英文语言包并加入PATH。Debian/Ubuntu包名：`tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng`。也可设置 `OCR_BACKEND=http` 接入受信的OCR服务，契约见 `ADAPTERS.md`。识别失败进入待审并记录错误，可重新识别或逐项人工校录，不会静默写入指标。
 
-## 3. Compose部署
+## 3. 平台部署（πOS）
+
+平台部署直接构建当前工作区，入口为 `scripts/start_platform.sh`：先 `alembic upgrade head`，再幂等执行 `scripts/seed`，最后启动 uvicorn。首次启动必须设置 `BOOTSTRAP_ADMIN_PASSWORD`（至少10位），否则初始化会失败并退出，不会带着半初始化数据库对外服务。
+
+```bash
+cp .env.example .env    # 填 DATABASE_URL / JWT_SECRET / MINIO_* / BOOTSTRAP_ADMIN_PASSWORD
+pios deploy plan
+pios deploy run --name toker-system --host <host> --channel test \
+  --title "自由光拓客系统" --desc "AI 内容工厂、多平台发布与线索看板" \
+  --reason "部署完整服务"
+```
+
+`.env` 会被部署命令注入容器且已被 `.gitignore` 忽略；不要把真实连接串、管理员密码或平台令牌提交到仓库。平台首次部署后可通过 `pios deploy status <instance_id>` 查看访问地址和健康状态。
+
+## 4. Compose部署
 
 ```bash
 docker compose build
@@ -39,7 +53,7 @@ Compose包含一次性迁移、API、单独worker和手动seed，连接外部数
 
 `apscheduler_jobs`由迁移创建，不能让多个APScheduler实例共享该jobstore。API可多进程，worker严格一个副本；内容任务有事务级互斥及日期唯一键，outbox同事件有唯一键。
 
-## 4. 演示账号与种子数据
+## 5. 演示账号与种子数据
 
 仅测试库中显式设置：
 
@@ -48,13 +62,13 @@ APP_ENV=development
 DEMO_MODE=true
 ```
 
-再运行 `python -m scripts.seed`。账号 `admin`（管理员）、`yunying`（运营）、`sales01`/`sales02`（销售），演示密码统一为 `Demo-Toker-2026!`。生成结果及AI日志明确标记演示，不能当成真实外部模型验收。生产禁止 `DEMO_MODE=true`，生产管理员由 `BOOTSTRAP_ADMIN_PASSWORD`创建，其他账号由管理员创建。
+再运行 `python -m scripts.seed`。账号 `admin`（管理员）、`yunying`（运营）、`sales01`/`sales02`（销售），演示密码由部署时设置的 `DEMO_SEED_PASSWORD` 环境变量提供（至少10位，不写入仓库）。生成结果及AI日志明确标记演示，不能当成真实外部模型验收。生产禁止 `DEMO_MODE=true`，生产管理员由 `BOOTSTRAP_ADMIN_PASSWORD`创建，其他账号由管理员创建。
 
 种子包含3条非真实业务素材、甲方线/渠道线选题、禁用/广告法/必需口径规则；重复运行不重复创建。真实公司资质、库存、业绩等事实由业务负责人确认后替换。
 
 修改密码：登录后 `POST /api/v1/auth/password`，提交 `old_password` 和 `new_password`；旧令牌随即全部失效。销售只能看被指派给自己的线索，不能改派，不能访问素材、AI日志、全量互动、指标和管理看板。
 
-## 5. 测试与九步演示
+## 6. 测试与九步演示
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -66,13 +80,13 @@ python -m scripts.e2e_demo --mode configured --out reports/e2e-configured.json
 
 真库回归须使用专用测试数据库或专用schema；`ALLOW_TEST_DATABASE_RESET=yes`才允许测试重置该schema，**禁止指向生产或共享业务schema**。`DATABASE_URL`可加 `?options=-csearch_path%3Dyour_test_schema`。
 
-## 6. 旧源码与接口兼容
+## 7. 旧源码与接口兼容
 
 `/api`保留为迁移期别名，响应带Deprecation，规范路径统一`/api/v1`。`confirm`现在只做人审，不自动发布；`confirm-reject`必须传reason。前端原文件未修改，旧按钮可能需由前端负责人按新契约调整，不能把原页面仍可打开说成新流程已完成前端联调。
 
 原 `部署说明.md`、`操作说明.md`为历史基线，不再是本分支部署依据。
 
-## 7. 已知未验收事项
+## 8. 已知未验收事项
 
 - 生产AI密钥、实际企微机器人与CRM接收端、平台账号素材/权限未提供，真实外部投递不在本次通过结论内。
 - 官方发布、受控浏览器填稿为默认关闭的实验适配，不作为一期发布前提。提交ID、填稿成功都不计发布量。

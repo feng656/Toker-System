@@ -68,14 +68,26 @@ def generation_context(db, topic):
     return context
 
 
+def _text(value, limit, sep=' '):
+    """模型可能把标签/段落返回成数组；统一成可入库、可复制的纯文本。"""
+    if isinstance(value, (list, tuple)):
+        value = sep.join(str(item).strip() for item in value if str(item).strip())
+    elif isinstance(value, dict):
+        value = ''
+    else:
+        value = str(value or '')
+    return value.strip()[:limit]
+
+
 def build_variant(db, c, platform, data, revision=1, parent_id=None):
-    if not isinstance(data, dict) or not str(data.get('body', '')).strip():
+    body = _text(data.get('body'), 30000, '\n\n') if isinstance(data, dict) else ''
+    if not body:
         raise AIUnavailable(f'{platform}生成结果缺少正文')
-    v = ContentVariant(content_id=c.id, platform=platform, body=str(data['body'])[:30000],
-                       cover_text=str(data.get('cover_text', ''))[:200],
-                       hashtags=str(data.get('hashtags', ''))[:500],
-                       image_prompt=str(data.get('image_prompt', '')),
-                       best_time=str(data.get('best_time', ''))[:100], revision=revision, parent_id=parent_id)
+    v = ContentVariant(content_id=c.id, platform=platform, body=body,
+                       cover_text=_text(data.get('cover_text'), 200),
+                       hashtags=_text(data.get('hashtags'), 500),
+                       image_prompt=_text(data.get('image_prompt'), 30000),
+                       best_time=_text(data.get('best_time'), 100), revision=revision, parent_id=parent_id)
     from .platforms import resolve
     v.platform_id = resolve(db, platform).id
     db.add(v)
